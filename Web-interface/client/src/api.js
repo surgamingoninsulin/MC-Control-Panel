@@ -66,6 +66,7 @@ export const api = {
     deleteUser: (id) => request(`/api/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
     listServers: () => request("/api/servers"),
     deleteServer: (id) => request(`/api/servers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    updateServer: (id) => request(`/api/servers/${encodeURIComponent(id)}/update`, { method: "POST" }),
     installServer: async (payload) => {
         const form = new FormData();
         form.append("name", payload.name);

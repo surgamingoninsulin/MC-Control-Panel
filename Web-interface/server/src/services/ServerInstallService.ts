@@ -3,6 +3,12 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ServerRecord, ServerType } from "./ServerRegistryService.js";
 
+const INFO_FILE_NAME = "info.txt";
+const MC_VERSION_RE = /(\d+\.\d+(?:\.\d+)?)/;
+
+type InstallResult = { jarPath: string; version?: string; build?: string | null; infoPath?: string };
+type UpdateResult = { jarPath: string; version: string; build: string | null; updated: boolean; infoPath: string };
+
 const fetchJson = async <T>(url: string): Promise<T> => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed request: ${url}`);
@@ -126,22 +132,22 @@ const downloadFirstAvailable = async (urls: string[], outputPath: string): Promi
   throw new Error(lastError || `Download failed from ${urls[0] || "unknown URL"}`);
 };
 
-const ensureVersionInJarName = async (jarAbsPath: string, version: string): Promise<string> => {
-  const ext = path.extname(jarAbsPath).toLowerCase();
-  if (ext !== ".jar") return jarAbsPath;
-  const dir = path.dirname(jarAbsPath);
-  const name = path.basename(jarAbsPath, ext);
-  if (name.toLowerCase().includes(version.toLowerCase())) return jarAbsPath;
-  const renamed = path.resolve(dir, `${name}-${version}.jar`);
-  if (renamed === jarAbsPath) return jarAbsPath;
-  const targetExists = await fs.stat(renamed).then(() => true).catch(() => false);
-  if (targetExists) await fs.rm(renamed, { force: true });
-  await fs.rename(jarAbsPath, renamed);
-  return renamed;
+const extractMinecraftVersion = (value: string): string => {
+  const raw = String(value || "").trim();
+  const match = raw.match(MC_VERSION_RE);
+  return match?.[1] || raw;
+};
+
+const parseVersionBuild = (value: string): { version: string; build: string | null } => {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d+\.\d+(?:\.\d+)?)(?:-(\d+))?$/);
+  if (!match) return { version: extractMinecraftVersion(raw), build: null };
+  return { version: match[1], build: match[2] || null };
 };
 
 export class ServerInstallService {
   async detectImportedServerJar(server: ServerRecord): Promise<{ jarFile: string | null; type: ServerType | null; version: string | null }> {
+    const infoVersion = await this.readInfoVersion(server.rootPath);
     const entries = await fs.readdir(server.rootPath, { withFileTypes: true });
     const jars = entries
       .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".jar"))
@@ -150,6 +156,10 @@ export class ServerInstallService {
 
     const detect = (name: string): { type: ServerType | null; version: string | null } => {
       const lower = name.toLowerCase();
+      const purpurBuild = lower.match(/^purpur-(\d+\.\d+(?:\.\d+)?)-(\d+)\.jar$/i);
+      if (purpurBuild?.[1]) {
+        return { type: "purpur", version: `${purpurBuild[1]}-${purpurBuild[2]}` };
+      }
       const patterns: Array<{ type: ServerType; regex: RegExp }> = [
         { type: "purpur", regex: /^purpur-(\d+\.\d+(?:\.\d+)?)-.+\.jar$/i },
         { type: "paper", regex: /^paper-(\d+\.\d+(?:\.\d+)?)-.+\.jar$/i },
@@ -169,13 +179,17 @@ export class ServerInstallService {
       return { type: null, version: fallback?.[1] || null };
     };
 
+    if (jars.some((jar) => /^purpur\.jar$/i.test(jar)) && infoVersion) {
+      return { jarFile: jars.find((jar) => /^purpur\.jar$/i.test(jar)) || null, type: "purpur", version: infoVersion };
+    }
+
     for (const jar of jars) {
       const result = detect(jar);
       if (result.type || result.version) {
         return { jarFile: jar, ...result };
       }
     }
-    return { jarFile: jars[0] || null, type: null, version: null };
+    return { jarFile: jars[0] || null, type: null, version: infoVersion || null };
   }
 
   private normalizeImportPaths(paths: string[]): string[] {
@@ -203,15 +217,23 @@ export class ServerInstallService {
     });
   }
 
-  async install(server: ServerRecord): Promise<{ jarPath: string }> {
-    const jarPath = path.resolve(server.rootPath, `${server.type}-${server.version}.jar`);
+  async install(server: ServerRecord): Promise<InstallResult> {
+    const inputVersion = String(server.version || "").trim();
+    const mcVersion = extractMinecraftVersion(inputVersion);
+    if (!MC_VERSION_RE.test(mcVersion)) {
+      throw new Error(`Invalid Minecraft version: ${server.version}`);
+    }
+    const jarPath = path.resolve(
+      server.rootPath,
+      server.type === "purpur" ? "purpur.jar" : `${server.type}-${mcVersion}.jar`
+    );
     await fs.mkdir(server.rootPath, { recursive: true });
     if (server.type === "vanilla") {
       const manifest = await fetchJson<{
         versions: Array<{ id: string; url: string; type: string }>;
       }>("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
       const versionEntry = manifest.versions.find(
-        (entry) => entry.id === server.version && entry.type === "release"
+        (entry) => entry.id === mcVersion && entry.type === "release"
       );
       if (!versionEntry) throw new Error("Vanilla version not found.");
       const versionMeta = await fetchJson<{ downloads?: { server?: { url: string } } }>(
@@ -220,29 +242,36 @@ export class ServerInstallService {
       const url = versionMeta.downloads?.server?.url;
       if (!url) throw new Error("No server jar available for this vanilla version.");
       await downloadFile(url, jarPath);
-      return { jarPath: await ensureVersionInJarName(jarPath, server.version) };
+      return { jarPath };
     }
     if (server.type === "paper") {
       const builds = await fetchJson<{ builds: number[] }>(
-        `https://api.papermc.io/v2/projects/paper/versions/${server.version}`
+        `https://api.papermc.io/v2/projects/paper/versions/${mcVersion}`
       );
       const latest = builds.builds.at(-1);
       if (!latest) throw new Error("No Paper build found for this version.");
       const file = await fetchJson<{ downloads: { application: { name: string } } }>(
-        `https://api.papermc.io/v2/projects/paper/versions/${server.version}/builds/${latest}`
+        `https://api.papermc.io/v2/projects/paper/versions/${mcVersion}/builds/${latest}`
       );
       const name = file.downloads.application.name;
-      const url = `https://api.papermc.io/v2/projects/paper/versions/${server.version}/builds/${latest}/downloads/${name}`;
+      const url = `https://api.papermc.io/v2/projects/paper/versions/${mcVersion}/builds/${latest}/downloads/${name}`;
       await downloadFile(url, jarPath);
-      return { jarPath: await ensureVersionInJarName(jarPath, server.version) };
+      return { jarPath };
     }
     if (server.type === "purpur") {
-      const url = `https://api.purpurmc.org/v2/purpur/${server.version}/latest/download`;
+      const buildMeta = await fetchJson<{ builds?: { latest?: number | string } }>(
+        `https://api.purpurmc.org/v2/purpur/${mcVersion}`
+      );
+      const latestBuild = buildMeta.builds?.latest !== undefined ? String(buildMeta.builds.latest) : null;
+      const url = `https://api.purpurmc.org/v2/purpur/${mcVersion}/latest/download`;
+      await this.removePurpurVersionedJars(server.rootPath);
       await downloadFile(url, jarPath);
-      return { jarPath: await ensureVersionInJarName(jarPath, server.version) };
+      const combinedVersion = latestBuild ? `${mcVersion}-${latestBuild}` : mcVersion;
+      const infoPath = await this.writeInfoVersion(server.rootPath, combinedVersion);
+      return { jarPath, version: combinedVersion, build: latestBuild, infoPath };
     }
     if (server.type === "spigot") {
-      await runBuildTools(server.rootPath, server.version);
+      await runBuildTools(server.rootPath, mcVersion);
       const files = await fs.readdir(server.rootPath);
       const spigotJar = files
         .filter((name) => /^spigot-.*\.jar$/i.test(name))
@@ -251,10 +280,10 @@ export class ServerInstallService {
       if (!spigotJar) throw new Error("Spigot jar not produced by BuildTools.");
       const builtPath = path.resolve(server.rootPath, spigotJar);
       await fs.copyFile(builtPath, jarPath);
-      return { jarPath: await ensureVersionInJarName(jarPath, server.version) };
+      return { jarPath };
     }
     if (server.type === "forge") {
-      const forgeVersion = await pickForgeArtifactVersion(server.version);
+      const forgeVersion = await pickForgeArtifactVersion(mcVersion);
       const installerPath = path.resolve(server.rootPath, `forge-${forgeVersion}-installer.jar`);
       const forgeUrls = [
         `https://maven.minecraftforge.net/net/minecraftforge/forge/${forgeVersion}/forge-${forgeVersion}-installer.jar`,
@@ -267,10 +296,10 @@ export class ServerInstallService {
         "Forge installer failed."
       );
       const resolved = await this.resolveInstalledServerJar(server.rootPath, [/forge-.*\.jar$/i]);
-      return { jarPath: await ensureVersionInJarName(resolved, server.version) };
+      return { jarPath: resolved };
     }
     if (server.type === "neoforge") {
-      const neoForgeVersion = await pickLatestNeoForgeVersionForMc(server.version);
+      const neoForgeVersion = await pickLatestNeoForgeVersionForMc(mcVersion);
       const installerPath = path.resolve(server.rootPath, `neoforge-${neoForgeVersion}-installer.jar`);
       const installerUrl = `https://maven.neoforged.net/releases/net/neoforged/neoforge/${neoForgeVersion}/neoforge-${neoForgeVersion}-installer.jar`;
       await downloadFile(installerUrl, installerPath);
@@ -280,23 +309,59 @@ export class ServerInstallService {
         "NeoForge installer failed."
       );
       const resolved = await this.resolveInstalledServerJar(server.rootPath, [/neoforge-.*\.jar$/i, /forge-.*\.jar$/i]);
-      return { jarPath: await ensureVersionInJarName(resolved, server.version) };
+      return { jarPath: resolved };
     }
     if (server.type === "fabric") {
       const installerVersion = await pickLatestFabricInstaller();
-      const loaderVersion = await pickLatestStableFabricLoader(server.version);
+      const loaderVersion = await pickLatestStableFabricLoader(mcVersion);
       const installerPath = path.resolve(server.rootPath, `fabric-installer-${installerVersion}.jar`);
       const installerUrl = `https://maven.fabricmc.net/net/fabricmc/fabric-installer/${installerVersion}/fabric-installer-${installerVersion}.jar`;
       await downloadFile(installerUrl, installerPath);
       await runJavaCommand(
-        `java -jar "${installerPath}" server -mcversion ${server.version} -loader ${loaderVersion} -downloadMinecraft`,
+        `java -jar "${installerPath}" server -mcversion ${mcVersion} -loader ${loaderVersion} -downloadMinecraft`,
         server.rootPath,
         "Fabric installer failed."
       );
       const resolved = await this.resolveInstalledServerJar(server.rootPath, [/fabric-server-launch\.jar$/i, /fabric-.*\.jar$/i]);
-      return { jarPath: await ensureVersionInJarName(resolved, server.version) };
+      return { jarPath: resolved };
     }
     throw new Error(`Unsupported server type: ${server.type}`);
+  }
+
+  async updateServerJar(server: ServerRecord): Promise<UpdateResult> {
+    if (server.type !== "purpur") {
+      throw new Error("Update is currently supported for Purpur servers only.");
+    }
+    const infoVersion = await this.readInfoVersion(server.rootPath);
+    const fromServer = parseVersionBuild(server.version);
+    const fromInfo = parseVersionBuild(infoVersion || "");
+    const mcVersion = fromServer.version || fromInfo.version;
+    if (!mcVersion || !MC_VERSION_RE.test(mcVersion)) {
+      throw new Error("Could not determine Minecraft version for this Purpur server.");
+    }
+    const currentBuild = fromServer.build || fromInfo.build;
+    const buildMeta = await fetchJson<{ builds?: { latest?: number | string } }>(
+      `https://api.purpurmc.org/v2/purpur/${mcVersion}`
+    );
+    const latestBuild = buildMeta.builds?.latest !== undefined ? String(buildMeta.builds.latest) : null;
+    if (!latestBuild) throw new Error(`No Purpur build found for Minecraft ${mcVersion}.`);
+
+    const jarPath = path.resolve(server.rootPath, "purpur.jar");
+    const tmpPath = path.resolve(server.rootPath, `purpur-${mcVersion}-${latestBuild}.jar.download`);
+    const url = `https://api.purpurmc.org/v2/purpur/${mcVersion}/latest/download`;
+    await downloadFile(url, tmpPath);
+    await fs.rm(jarPath, { force: true });
+    await fs.rename(tmpPath, jarPath);
+    await this.removePurpurVersionedJars(server.rootPath);
+    const combinedVersion = `${mcVersion}-${latestBuild}`;
+    const infoPath = await this.writeInfoVersion(server.rootPath, combinedVersion);
+    return {
+      jarPath,
+      version: combinedVersion,
+      build: latestBuild,
+      updated: currentBuild !== latestBuild,
+      infoPath
+    };
   }
 
   private async resolveInstalledServerJar(serverRoot: string, preferredPatterns: RegExp[]): Promise<string> {
@@ -345,5 +410,29 @@ export class ServerInstallService {
       throw new Error("Import failed: no valid files were received from the selected folder.");
     }
     return { saved };
+  }
+
+  private async writeInfoVersion(serverRoot: string, value: string): Promise<string> {
+    const infoPath = path.resolve(serverRoot, INFO_FILE_NAME);
+    await fs.writeFile(infoPath, `${String(value || "").trim()}\n`, "utf8");
+    return infoPath;
+  }
+
+  private async readInfoVersion(serverRoot: string): Promise<string | null> {
+    try {
+      const raw = await fs.readFile(path.resolve(serverRoot, INFO_FILE_NAME), "utf8");
+      const value = String(raw || "").trim();
+      return value || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async removePurpurVersionedJars(serverRoot: string): Promise<void> {
+    const entries = await fs.readdir(serverRoot, { withFileTypes: true });
+    const toDelete = entries
+      .filter((entry) => entry.isFile() && /^purpur-\d+\.\d+(?:\.\d+)?-\d+\.jar$/i.test(entry.name))
+      .map((entry) => path.resolve(serverRoot, entry.name));
+    await Promise.all(toDelete.map((filePath) => fs.rm(filePath, { force: true })));
   }
 }

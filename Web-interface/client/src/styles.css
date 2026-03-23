@@ -274,7 +274,25 @@ textarea:focus {
 
 .server-item {
   position: relative;
-  padding-right: 36px;
+  padding-right: 68px;
+}
+
+.server-update-btn {
+  position: absolute;
+  top: 6px;
+  right: 36px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid #8a7a2a;
+  background: #3b3518;
+  color: #ffefb5;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+  font-size: 0.95rem;
+  line-height: 1;
 }
 
 .server-delete-btn {
@@ -295,6 +313,7 @@ textarea:focus {
   line-height: 1;
 }
 
+.server-item:hover .server-update-btn,
 .server-item:hover .server-delete-btn {
   opacity: 1;
   pointer-events: auto;
@@ -341,6 +360,11 @@ textarea:focus {
 .server-delete-btn i {
   color: #ffd2c5;
   font-size: 0.8rem;
+}
+
+.server-update-btn i {
+  color: #ffefb5;
+  font-size: 0.76rem;
 }
 
 .refresh-icon {

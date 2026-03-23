@@ -1,11 +1,37 @@
 import path from "node:path";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const DEFAULT_SERVER_ROOT = path.resolve(process.cwd(), "..", "..", "Server");
-const DEFAULT_SERVERS_ROOT = path.resolve(process.cwd(), "..", "..", "Servers");
-const DEFAULT_PANEL_DATA = path.resolve(process.cwd(), "data");
+const CONFIG_FILE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const SERVER_PACKAGE_DIR = path.resolve(CONFIG_FILE_DIR, "..");
+const WEB_INTERFACE_DIR = path.resolve(SERVER_PACKAGE_DIR, "..");
+const PROJECT_ROOT_DIR = path.resolve(WEB_INTERFACE_DIR, "..");
+
+const pickProjectServersDir = (): string => {
+  const upper = path.resolve(PROJECT_ROOT_DIR, "Servers");
+  if (fs.existsSync(upper)) return upper;
+  return path.resolve(PROJECT_ROOT_DIR, "servers");
+};
+
+const resolveConfiguredPath = (value: string | undefined, fallbackAbs: string): string => {
+  const raw = String(value || "").trim();
+  if (!raw) return fallbackAbs;
+  if (path.isAbsolute(raw)) return path.resolve(raw);
+  const fromProjectRoot = path.resolve(PROJECT_ROOT_DIR, raw);
+  const fromServerPackage = path.resolve(SERVER_PACKAGE_DIR, raw);
+  const fromWebInterface = path.resolve(WEB_INTERFACE_DIR, raw);
+  if (fs.existsSync(fromProjectRoot)) return fromProjectRoot;
+  if (fs.existsSync(fromServerPackage)) return fromServerPackage;
+  if (fs.existsSync(fromWebInterface)) return fromWebInterface;
+  return fromProjectRoot;
+};
+
+const DEFAULT_SERVER_ROOT = pickProjectServersDir();
+const DEFAULT_SERVERS_ROOT = DEFAULT_SERVER_ROOT;
+const DEFAULT_PANEL_DATA = path.resolve(SERVER_PACKAGE_DIR, "data");
 const toNumber = (value: string | undefined, fallback: number): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -15,12 +41,17 @@ const toBoolean = (value: string | undefined, fallback: boolean): boolean => {
   return value.toLowerCase() === "true";
 };
 
+const resolvedServersRoot = resolveConfiguredPath(process.env.SERVERS_ROOT, DEFAULT_SERVERS_ROOT);
+const configuredServerRoot = resolveConfiguredPath(process.env.SERVER_ROOT, DEFAULT_SERVER_ROOT);
+const resolvedServerRoot = fs.existsSync(configuredServerRoot) ? configuredServerRoot : resolvedServersRoot;
+const resolvedPanelDataDir = resolveConfiguredPath(process.env.PANEL_DATA_DIR, DEFAULT_PANEL_DATA);
+
 export const appConfig = {
   port: Number(process.env.PORT || 4200),
   host: process.env.HOST || "127.0.0.1",
-  serverRoot: path.resolve(process.env.SERVER_ROOT || DEFAULT_SERVER_ROOT),
-  serversRoot: path.resolve(process.env.SERVERS_ROOT || DEFAULT_SERVERS_ROOT),
-  panelDataDir: path.resolve(process.env.PANEL_DATA_DIR || DEFAULT_PANEL_DATA),
+  serverRoot: resolvedServerRoot,
+  serversRoot: resolvedServersRoot,
+  panelDataDir: resolvedPanelDataDir,
   startCommand: process.env.START_COMMAND || "",
   javaBinary: process.env.JAVA_BINARY || "java",
   serverJar: process.env.SERVER_JAR || "purpur.jar",

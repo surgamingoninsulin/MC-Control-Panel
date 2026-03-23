@@ -89,6 +89,11 @@ export const api = {
   listServers: () => request<{ servers: ServerProfile[] }>("/api/servers"),
   deleteServer: (id: string) =>
     request<{ removed: ServerProfile }>(`/api/servers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  updateServer: (id: string) =>
+    request<{ server: ServerProfile; update: { jarPath: string; version: string; build: string | null; updated: boolean; infoPath: string } }>(
+      `/api/servers/${encodeURIComponent(id)}/update`,
+      { method: "POST" }
+    ),
   installServer: async (payload: { name: string; type: ServerInstallType; version: string; icon?: File | null }) => {
     const form = new FormData();
     form.append("name", payload.name);

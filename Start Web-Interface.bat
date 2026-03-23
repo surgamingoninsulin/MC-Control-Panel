@@ -2,12 +2,16 @@
 setlocal
 set "ROOT_DIR=%~dp0"
 set "WEB_DIR=%ROOT_DIR%Web-interface"
+set "SERVERS_DIR=%ROOT_DIR%Servers"
 set "PANEL_HOST=127.0.0.1"
 set "PANEL_PORT=4200"
 set "PANEL_URL=http://%PANEL_HOST%:%PANEL_PORT%"
 set "NO_COLOR=1"
 set "FORCE_COLOR=0"
 set "npm_config_color=false"
+set "SERVER_ROOT=%SERVERS_DIR%"
+set "SERVERS_ROOT=%SERVERS_DIR%"
+set "PANEL_DATA_DIR=%WEB_DIR%\server\data"
 
 net session >nul 2>&1
 if %errorlevel%==0 (

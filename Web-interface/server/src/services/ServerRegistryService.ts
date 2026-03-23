@@ -35,10 +35,21 @@ export class ServerRegistryService {
     fs.mkdirSync(appConfig.serversRoot, { recursive: true });
     this.filePath = path.resolve(appConfig.panelDataDir, "servers.json");
     this.data = this.load();
+    let changed = false;
     for (const server of this.data.servers) {
+      const canonicalRoot = path.resolve(appConfig.serversRoot, server.name);
+      const normalizedCurrent = path.resolve(server.rootPath);
+      const normalizedBase = path.resolve(appConfig.serversRoot);
+      const expectedInBase =
+        normalizedCurrent === normalizedBase || normalizedCurrent.startsWith(`${normalizedBase}${path.sep}`);
+      if (!expectedInBase || normalizedCurrent !== canonicalRoot) {
+        server.rootPath = this.reconcileServerRoot(server.name, normalizedCurrent, canonicalRoot);
+        changed = true;
+      }
       this.ensureAddonLayout(server.rootPath, server.type);
       this.ensureServerIcon(server.rootPath);
     }
+    if (changed) this.persist();
   }
 
   list(): ServerRecord[] {
@@ -147,9 +158,7 @@ export class ServerRegistryService {
     const current = this.requireById(id);
     this.data.servers = this.data.servers.filter((server) => server.id !== id);
     this.persist();
-    if (fs.existsSync(current.rootPath)) {
-      fs.rmSync(current.rootPath, { recursive: true, force: true });
-    }
+    this.removeServerRoot(current.rootPath);
     return current;
   }
 
@@ -203,5 +212,91 @@ export class ServerRegistryService {
     const fromPublic = path.resolve(process.cwd(), "../client/public/server-icon.png");
     if (fs.existsSync(fromPublic)) return fromPublic;
     return null;
+  }
+
+  private removeServerRoot(rootPath: string): void {
+    if (!fs.existsSync(rootPath)) return;
+    try {
+      fs.rmSync(rootPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+    } catch {
+      // fallback below
+    }
+    if (!fs.existsSync(rootPath)) return;
+    this.forceRemoveTree(rootPath);
+    try {
+      fs.rmSync(rootPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+    } catch {
+      // final existence check throws below
+    }
+    if (fs.existsSync(rootPath)) {
+      throw new Error(`Server folder could not be fully deleted: ${rootPath}`);
+    }
+  }
+
+  private forceRemoveTree(targetPath: string): void {
+    if (!fs.existsSync(targetPath)) return;
+    const stat = fs.lstatSync(targetPath);
+    if (stat.isDirectory() && !stat.isSymbolicLink()) {
+      for (const name of fs.readdirSync(targetPath)) {
+        this.forceRemoveTree(path.resolve(targetPath, name));
+      }
+      try {
+        fs.chmodSync(targetPath, 0o777);
+      } catch {
+        // no-op
+      }
+      try {
+        fs.rmdirSync(targetPath);
+      } catch {
+        try {
+          fs.rmSync(targetPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+        } catch {
+          // no-op
+        }
+      }
+      return;
+    }
+    try {
+      fs.chmodSync(targetPath, 0o666);
+    } catch {
+      // no-op
+    }
+    try {
+      fs.rmSync(targetPath, { force: true });
+    } catch {
+      // no-op
+    }
+  }
+
+  private reconcileServerRoot(serverName: string, currentRoot: string, targetRoot: string): string {
+    if (currentRoot === targetRoot) return targetRoot;
+    fs.mkdirSync(appConfig.serversRoot, { recursive: true });
+    const currentExists = fs.existsSync(currentRoot);
+    const targetExists = fs.existsSync(targetRoot);
+
+    if (targetExists) {
+      return targetRoot;
+    }
+    if (!currentExists) {
+      fs.mkdirSync(targetRoot, { recursive: true });
+      return targetRoot;
+    }
+
+    try {
+      fs.mkdirSync(path.dirname(targetRoot), { recursive: true });
+      fs.renameSync(currentRoot, targetRoot);
+      return targetRoot;
+    } catch {
+      // Cross-volume fallback
+    }
+
+    try {
+      fs.cpSync(currentRoot, targetRoot, { recursive: true, force: true });
+      fs.rmSync(currentRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+      return targetRoot;
+    } catch {
+      // Keep existing path if move/copy fails.
+      return currentRoot;
+    }
   }
 }

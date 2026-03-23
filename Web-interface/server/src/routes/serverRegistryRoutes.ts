@@ -68,15 +68,42 @@ export const createServerRegistryRoutes = (ctx: AppContext): Router => {
   router.post("/install", requireRole(["owner", "admin"]), upload.single("icon"), async (req, res) => {
     try {
       const input = parseInstallInput(req.body);
-      const server = ctx.servers.create(input);
+      const created = ctx.servers.create(input);
       if (req.file) {
         if (!/\.png$/i.test(String(req.file.originalname || ""))) {
           return res.status(400).json({ error: "Server icon must be a .png file." });
         }
-        ctx.servers.setServerIcon(server.id, req.file.buffer);
+        ctx.servers.setServerIcon(created.id, req.file.buffer);
       }
-      const install = await ctx.installer.install(server);
+      const install = await ctx.installer.install(created);
+      const server =
+        install.version && install.version !== created.version
+          ? ctx.servers.update(created.id, { version: install.version })
+          : created;
       return res.json({ server, install });
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  router.post("/:id/update", requireRole(["owner", "admin"]), async (req, res) => {
+    try {
+      const id = String(req.params.id);
+      if (ctx.runtime.isRunning(id)) {
+        return res.status(400).json({ error: "Cannot update a running server. Stop it first." });
+      }
+      const current = ctx.servers.requireById(id);
+      const update = await ctx.installer.updateServerJar(current);
+      const server =
+        update.version && update.version !== current.version
+          ? ctx.servers.update(current.id, { version: update.version })
+          : current;
+      ctx.audit.write({
+        action: "server.jar.update",
+        actor: "local-admin",
+        details: { serverId: id, type: current.type, version: update.version, build: update.build, updated: update.updated }
+      });
+      return res.json({ server, update });
     } catch (error) {
       return res.status(400).json({ error: (error as Error).message });
     }

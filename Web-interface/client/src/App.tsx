@@ -120,6 +120,7 @@ export default function App() {
   const consoleScrollRef = useRef<HTMLDivElement>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [serverToDelete, setServerToDelete] = useState<ServerProfile | null>(null);
+  const [updatingServerId, setUpdatingServerId] = useState("");
   const [showAddServerModal, setShowAddServerModal] = useState(false);
   const [addServerMode, setAddServerMode] = useState<AddServerMode>("chooser");
 
@@ -150,6 +151,7 @@ export default function App() {
   const [plugins, setPlugins] = useState<PluginEntry[]>([]);
   const [pluginsLoading, setPluginsLoading] = useState(false);
   const [selectedAddonKeys, setSelectedAddonKeys] = useState<string[]>([]);
+  const [deletePluginConfigOnRemove, setDeletePluginConfigOnRemove] = useState(true);
   const pluginBrowseRef = useRef<HTMLInputElement>(null);
   const [mods, setMods] = useState<ModEntry[]>([]);
   const [modsLoading, setModsLoading] = useState(false);
@@ -596,6 +598,18 @@ export default function App() {
     await loadServers();
   };
   const deleteServerNow = async () => { if (!serverToDelete) return; await api.deleteServer(serverToDelete.id); setShowDeleteModal(false); setServerToDelete(null); await loadServers(); };
+  const updateServerNow = async (server: ServerProfile) => {
+    if (updatingServerId) return;
+    setUpdatingServerId(server.id);
+    try {
+      const out = await api.updateServer(server.id);
+      await loadServers();
+      if (selectedServerId === server.id) await loadStatus();
+      setMessage(out.update.updated ? `Updated ${out.server.name} to ${out.server.version}.` : `${out.server.name} is already on ${out.server.version}.`);
+    } finally {
+      setUpdatingServerId("");
+    }
+  };
   const createUserNow = async () => {
     await api.createUser({ username: newUsername.trim(), email: newEmail.trim(), password: newPassword, role: newRole });
     setNewUsername(""); setNewEmail(""); setNewPassword(""); setNewRole("viewer");
@@ -665,7 +679,7 @@ export default function App() {
     if (addonsMode === "none") return;
     for (const addonKey of selectedAddonKeys) {
       if (addonKey.startsWith("plugin:")) {
-        await api.removePlugin(addonKey.slice("plugin:".length), false);
+        await api.removePlugin(addonKey.slice("plugin:".length), deletePluginConfigOnRemove);
       } else if (addonKey.startsWith("mod:")) {
         await api.removeMod(addonKey.slice("mod:".length));
       }
@@ -820,7 +834,7 @@ export default function App() {
         <div className="workspace">
           <aside className="servers-column card">
             <h2>Servers</h2>
-            <div className="server-list-vertical">{servers.map((server) => <div key={server.id} className={selectedServerId === server.id ? "server-pill active server-item" : "server-pill server-item"} onClick={() => setSelectedServerId(server.id)}><img className="server-list-icon" src={`/api/servers/${encodeURIComponent(server.id)}/icon`} alt={`${server.name} icon`} /><div className="server-pill-text"><strong>{server.name}</strong><small>{server.type} {server.version}</small></div>{canOperateServer && <button className="server-delete-btn" aria-label="Delete server" onClick={(e) => { e.stopPropagation(); setServerToDelete(server); setShowDeleteModal(true); }} title="Delete"><i className="fa-solid fa-trash-can" aria-hidden="true" /></button>}</div>)}</div>
+            <div className="server-list-vertical">{servers.map((server) => <div key={server.id} className={selectedServerId === server.id ? "server-pill active server-item" : "server-pill server-item"} onClick={() => setSelectedServerId(server.id)}><img className="server-list-icon" src={`/api/servers/${encodeURIComponent(server.id)}/icon`} alt={`${server.name} icon`} /><div className="server-pill-text"><strong>{server.name}</strong><small>{server.type} {server.version}</small></div>{canOperateServer && server.type === "purpur" && <button className="server-update-btn" aria-label="Update server jar" onClick={(e) => { e.stopPropagation(); updateServerNow(server).catch((err) => setMessage(err.message)); }} title="Update server jar" disabled={!!updatingServerId}><i className="fa-solid fa-rotate-right" aria-hidden="true" /></button>}{canOperateServer && <button className="server-delete-btn" aria-label="Delete server" onClick={(e) => { e.stopPropagation(); setServerToDelete(server); setShowDeleteModal(true); }} title="Delete"><i className="fa-solid fa-trash-can" aria-hidden="true" /></button>}</div>)}</div>
             {canOperateServer && (
               <div className="server-sidebar-actions">
                 <button onClick={() => openServerModal("import")}><i className="fa-solid fa-file-import" aria-hidden="true" /> Import Server</button>
@@ -928,6 +942,16 @@ export default function App() {
                       <input ref={modBrowseRef} type="file" multiple hidden onChange={(e) => browseModInstall([...(e.target.files || [])]).catch((err) => setMessage(err.message))} />
                       {addonsMode === "plugins" ? <button onClick={() => pluginBrowseRef.current?.click()}>Add Plugin</button> : <button onClick={() => modBrowseRef.current?.click()}>Add Mod/Pack</button>}
                       <button className="btn-danger" disabled={!selectedAddonKeys.length} onClick={() => deleteSelectedAddons().catch((e) => setMessage(e.message))}>Remove Selected</button>
+                      {addonsMode === "plugins" && (
+                        <label className="row muted">
+                          <input
+                            type="checkbox"
+                            checked={deletePluginConfigOnRemove}
+                            onChange={(e) => setDeletePluginConfigOnRemove(e.target.checked)}
+                          />
+                          Also delete config folder
+                        </label>
+                      )}
                     </div>
                     <div className="file-list">
                       {(pluginsLoading || modsLoading) && <div className="empty-list">Loading plugins/mods...</div>}
