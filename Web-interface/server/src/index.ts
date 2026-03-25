@@ -13,6 +13,7 @@ import { PluginService } from "./services/PluginService.js";
 import { ModService } from "./services/ModService.js";
 import { ServerInstallService } from "./services/ServerInstallService.js";
 import { ServerRegistryService } from "./services/ServerRegistryService.js";
+import { ServerAdminService } from "./services/ServerAdminService.js";
 import { ServerSettingsService } from "./services/ServerSettingsService.js";
 import { VersionCatalogService } from "./services/VersionCatalogService.js";
 import { WebSocketHub } from "./services/WebSocketHub.js";
@@ -36,6 +37,7 @@ const servers = new ServerRegistryService();
 const auth = new AuthService();
 const settings = new ServerSettingsService();
 const runtime = new MultiServerRuntimeService(settings);
+const admin = new ServerAdminService(runtime);
 const audit = new AuditLogService();
 const files = new FileService();
 const configValidation = new ConfigValidationService();
@@ -50,6 +52,7 @@ const ctx = {
   servers,
   auth,
   installer,
+  admin,
   versionCatalog,
   audit,
   files,

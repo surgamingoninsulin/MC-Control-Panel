@@ -6,6 +6,7 @@ import { AuthService } from "./services/AuthService.js";
 import { MultiServerRuntimeService } from "./services/MultiServerRuntimeService.js";
 import { ServerInstallService } from "./services/ServerInstallService.js";
 import { ServerRegistryService } from "./services/ServerRegistryService.js";
+import { ServerAdminService } from "./services/ServerAdminService.js";
 import { ServerSettingsService } from "./services/ServerSettingsService.js";
 import { VersionCatalogService } from "./services/VersionCatalogService.js";
 import { ModService } from "./services/ModService.js";
@@ -17,6 +18,7 @@ export type AppContext = {
   servers: ServerRegistryService;
   auth: AuthService;
   installer: ServerInstallService;
+  admin: ServerAdminService;
   versionCatalog: VersionCatalogService;
   audit: AuditLogService;
   files: FileService;

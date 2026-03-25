@@ -65,6 +65,26 @@ export const createServerRegistryRoutes = (ctx: AppContext): Router => {
     }
   });
 
+  router.post("/:id/rename", requireRole(["owner", "admin"]), (req, res) => {
+    try {
+      const id = String(req.params.id);
+      const name = String(req.body?.name || "").trim();
+      if (!name) return res.status(400).json({ error: "Server name is required." });
+      if (ctx.runtime.isRunning(id)) {
+        return res.status(400).json({ error: "Cannot rename a running server. Stop it first." });
+      }
+      const server = ctx.servers.update(id, { name });
+      ctx.audit.write({
+        action: "server.rename",
+        actor: "local-admin",
+        details: { serverId: id, name }
+      });
+      return res.json({ server });
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
   router.post("/install", requireRole(["owner", "admin"]), upload.single("icon"), async (req, res) => {
     try {
       const input = parseInstallInput(req.body);
@@ -115,6 +135,24 @@ export const createServerRegistryRoutes = (ctx: AppContext): Router => {
       return res.sendFile(iconPath);
     } catch (error) {
       return res.status(404).json({ error: (error as Error).message });
+    }
+  });
+
+  router.get("/:id/addons-summary", requireRole(["owner", "admin", "viewer"]), async (req, res) => {
+    try {
+      const id = String(req.params.id);
+      const server = ctx.servers.requireById(id);
+      if (server.type === "vanilla") {
+        return res.json({ summary: { mode: "none", items: [] } });
+      }
+      if (server.type === "paper" || server.type === "spigot" || server.type === "purpur") {
+        const plugins = await ctx.plugins.list(server.rootPath);
+        return res.json({ summary: { mode: "plugins", items: plugins.map((entry) => entry.pluginId) } });
+      }
+      const mods = await ctx.mods.list(server.rootPath);
+      return res.json({ summary: { mode: "mods", items: mods.map((entry) => entry.modId) } });
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
     }
   });
 

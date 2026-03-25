@@ -1,7 +1,12 @@
 import type {
+  EulaState,
   FileEntry,
   ModEntry,
+  PlayerRecord,
   PluginEntry,
+  ServerAddonSummary,
+  ServerPropertiesState,
+  StartServerResult,
   ServerInstallType,
   ServerProfile,
   ServerSettings,
@@ -89,6 +94,12 @@ export const api = {
   listServers: () => request<{ servers: ServerProfile[] }>("/api/servers"),
   deleteServer: (id: string) =>
     request<{ removed: ServerProfile }>(`/api/servers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  renameServer: (id: string, name: string) =>
+    request<{ server: ServerProfile }>(`/api/servers/${encodeURIComponent(id)}/rename`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ name })
+    }),
   updateServer: (id: string) =>
     request<{ server: ServerProfile; update: { jarPath: string; version: string; build: string | null; updated: boolean; infoPath: string } }>(
       `/api/servers/${encodeURIComponent(id)}/update`,
@@ -119,11 +130,14 @@ export const api = {
     return res.json() as Promise<{ server: ServerProfile; saved: string[] }>;
   },
   getServerTypes: () => request<{ types: ServerTypeOption[] }>("/api/server-types"),
+  getServerAddonSummary: (id: string) =>
+    request<{ summary: ServerAddonSummary }>(`/api/servers/${encodeURIComponent(id)}/addons-summary`),
   getServerVersions: (type: ServerInstallType) =>
     request<{ versions: string[] }>(`/api/server-versions?type=${encodeURIComponent(type)}`),
 
   serverStatus: () => request<ServerStatus>("/api/server/status"),
-  startServer: () => request("/api/server/start", { method: "POST" }),
+  startServer: () => request<StartServerResult>("/api/server/start", { method: "POST" }),
+  startServerAfterEula: () => request<StartServerResult>("/api/server/start-force", { method: "POST" }),
   stopServer: () => request("/api/server/stop", { method: "POST" }),
   restartServer: () => request("/api/server/restart", { method: "POST" }),
   getServerSettings: () => request<{ settings: ServerSettings }>("/api/server/settings"),
@@ -138,6 +152,46 @@ export const api = {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ command })
+    }),
+  listPlayers: () => request<{ players: PlayerRecord[] }>("/api/server/players"),
+  addPlayer: (payload: {
+    username: string;
+    whitelisted?: boolean;
+    operator?: boolean;
+    opLevel?: number;
+    bypassesPlayerLimit?: boolean;
+  }) =>
+    request<{ player: PlayerRecord }>("/api/server/players", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    }),
+  updatePlayer: (
+    uuid: string,
+    payload: { name?: string; whitelisted?: boolean; operator?: boolean; opLevel?: number; bypassesPlayerLimit?: boolean }
+  ) =>
+    request<{ player: PlayerRecord }>(`/api/server/players/${encodeURIComponent(uuid)}`, {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    }),
+  removePlayer: (uuid: string, name?: string) =>
+    request<{ ok: true }>(`/api/server/players/${encodeURIComponent(uuid)}${name ? `?name=${encodeURIComponent(name)}` : ""}`, {
+      method: "DELETE"
+    }),
+  getEula: () => request<{ eula: EulaState }>("/api/server/eula"),
+  setEula: (accepted: boolean) =>
+    request<{ eula: EulaState }>("/api/server/eula", {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify({ accepted })
+    }),
+  getServerProperties: () => request<ServerPropertiesState>("/api/server/properties"),
+  updateServerProperties: (payload: { fields: Array<{ key: string; value: string }>; expectedMtime?: string | null }) =>
+    request<ServerPropertiesState>("/api/server/properties", {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
     }),
   consoleHistory: (cursor = 0) =>
     request<{ lines: unknown[]; nextCursor: number }>(`/api/console/history?cursor=${cursor}`),

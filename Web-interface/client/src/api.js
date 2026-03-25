@@ -66,6 +66,11 @@ export const api = {
     deleteUser: (id) => request(`/api/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
     listServers: () => request("/api/servers"),
     deleteServer: (id) => request(`/api/servers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    renameServer: (id, name) => request(`/api/servers/${encodeURIComponent(id)}/rename`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ name })
+    }),
     updateServer: (id) => request(`/api/servers/${encodeURIComponent(id)}/update`, { method: "POST" }),
     installServer: async (payload) => {
         const form = new FormData();
@@ -95,9 +100,11 @@ export const api = {
         return res.json();
     },
     getServerTypes: () => request("/api/server-types"),
+    getServerAddonSummary: (id) => request(`/api/servers/${encodeURIComponent(id)}/addons-summary`),
     getServerVersions: (type) => request(`/api/server-versions?type=${encodeURIComponent(type)}`),
     serverStatus: () => request("/api/server/status"),
     startServer: () => request("/api/server/start", { method: "POST" }),
+    startServerAfterEula: () => request("/api/server/start-force", { method: "POST" }),
     stopServer: () => request("/api/server/stop", { method: "POST" }),
     restartServer: () => request("/api/server/restart", { method: "POST" }),
     getServerSettings: () => request("/api/server/settings"),
@@ -110,6 +117,32 @@ export const api = {
         method: "POST",
         headers: jsonHeaders,
         body: JSON.stringify({ command })
+    }),
+    listPlayers: () => request("/api/server/players"),
+    addPlayer: (payload) => request("/api/server/players", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload)
+    }),
+    updatePlayer: (uuid, payload) => request(`/api/server/players/${encodeURIComponent(uuid)}`, {
+        method: "PATCH",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload)
+    }),
+    removePlayer: (uuid, name) => request(`/api/server/players/${encodeURIComponent(uuid)}${name ? `?name=${encodeURIComponent(name)}` : ""}`, {
+        method: "DELETE"
+    }),
+    getEula: () => request("/api/server/eula"),
+    setEula: (accepted) => request("/api/server/eula", {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify({ accepted })
+    }),
+    getServerProperties: () => request("/api/server/properties"),
+    updateServerProperties: (payload) => request("/api/server/properties", {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload)
     }),
     consoleHistory: (cursor = 0) => request(`/api/console/history?cursor=${cursor}`),
     clearConsoleHistory: () => request("/api/console/clear", { method: "POST" }),

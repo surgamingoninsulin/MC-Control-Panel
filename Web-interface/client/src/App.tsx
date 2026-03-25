@@ -1,17 +1,36 @@
 import { useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { api } from "./api";
-import type { ConsoleLine, FileEntry, ModEntry, PluginEntry, ServerInstallType, ServerProfile, ServerSettings, ServerStatus, ServerTypeOption, UserRecord, UserRole } from "./types";
+import type {
+  ConsoleLine,
+  EulaState,
+  FileEntry,
+  ModEntry,
+  PlayerRecord,
+  PluginEntry,
+  ServerAddonSummary,
+  ServerInstallType,
+  ServerProfile,
+  ServerPropertiesState,
+  ServerPropertyField,
+  ServerSettings,
+  ServerStatus,
+  ServerTypeOption,
+  UserRecord,
+  UserRole
+} from "./types";
 
-type View = "console" | "files" | "plugins" | "settings" | "users";
+type View = "console" | "players" | "files" | "plugins" | "settings" | "users";
 type AddServerMode = "chooser" | "install" | "import";
 type UiUserRole = "admin" | "viewer";
 
 type ConfigEditorState = { path: string; content: string; originalContent: string; mtime: string };
 const STORAGE_KEY_SETUP = "panel.setup.complete";
-const STORAGE_KEY_LOGIN_REMEMBER = "panel.login.remember";
 const STORAGE_KEY_LOGIN_EMAIL = "panel.login.email";
 const STORAGE_KEY_LOGIN_PASSWORD = "panel.login.password";
+const STORAGE_KEY_REMEMBER_EMAIL = "panel.login.remember.email";
+const STORAGE_KEY_REMEMBER_PASSWORD = "panel.login.remember.password";
+const STORAGE_KEY_REMEMBER_BOTH = "panel.login.remember.both";
 const CONFIG_EXTENSIONS = new Set([".yml", ".yaml", ".json", ".toml", ".properties", ".ini", ".cfg", ".conf"]);
 const DEFAULT_SETTINGS: ServerSettings = {
   startupScript: "",
@@ -22,6 +41,79 @@ const DEFAULT_SETTINGS: ServerSettings = {
   serverPort: null,
   playitEnabled: false,
   playitCommand: ""
+};
+const DEFAULT_PROPERTIES: ServerPropertiesState = {
+  path: "server.properties",
+  mtime: null,
+  fields: []
+};
+const PROPERTY_CATEGORY_LABELS: Record<ServerPropertyField["category"], string> = {
+  access: "Access",
+  world: "World",
+  gameplay: "Gameplay",
+  network: "Network",
+  performance: "Performance",
+  advanced: "Advanced / Custom"
+};
+const PROPERTY_CATEGORY_DESCRIPTIONS: Record<ServerPropertyField["category"], string> = {
+  access: "Player access, permissions, authentication, and operator-facing rules.",
+  world: "World generation and persistent world behavior.",
+  gameplay: "Core survival and player experience settings.",
+  network: "Ports, MOTD, status visibility, and external connectivity.",
+  performance: "Settings that affect load, ticking, and runtime efficiency.",
+  advanced: "Specialized or custom properties that usually need extra care."
+};
+const PROPERTY_DESCRIPTIONS: Record<string, string> = {
+  "accepts-transfers": "Allows server transfer support for compatible clients and services.",
+  "allow-flight": "Lets players stay connected while flying, useful for modded servers and admins.",
+  "broadcast-console-to-ops": "Sends console output to online operators.",
+  "broadcast-rcon-to-ops": "Sends RCON output to online operators.",
+  difficulty: "Sets the world difficulty for mobs, hunger, and damage balance.",
+  "enable-query": "Enables the GameSpy query protocol for external server-list tools.",
+  "enable-rcon": "Enables remote console access through the RCON protocol.",
+  "enable-status": "Controls whether the server responds to status pings and server list checks.",
+  "enforce-secure-profile": "Requires secure chat/player profiles for newer Minecraft versions.",
+  "enforce-whitelist": "Kicks non-whitelisted players immediately when the whitelist is active.",
+  "force-gamemode": "Forces players to join with the configured default gamemode.",
+  gamemode: "Sets the default gamemode for new players and respawns.",
+  hardcore: "Enables hardcore mode with permanent death behavior.",
+  "hide-online-players": "Hides player counts and player lists from server-status pings.",
+  "level-name": "Defines the folder name used for the main world save.",
+  "level-seed": "Controls world generation using a custom seed value.",
+  "level-type": "Chooses the world generation style such as normal or flat.",
+  "management-server-enabled": "Enables the built-in management server features if supported by the jar.",
+  "management-server-host": "Host binding used by the integrated management server.",
+  "management-server-port": "Port used by the integrated management server.",
+  "management-server-secret": "Secret token used to authorize management server access.",
+  "management-server-tls-enabled": "Controls TLS for the integrated management server.",
+  "max-players": "Maximum number of players allowed to join at the same time.",
+  "max-tick-time": "Watchdog timeout before the server force-stops a frozen tick.",
+  motd: "Message shown in the multiplayer server list.",
+  "network-compression-threshold": "Packet compression threshold. Lower values compress more traffic.",
+  "online-mode": "Validates players with Mojang/Microsoft authentication.",
+  "op-permission-level": "Permission level granted to operators.",
+  "pause-when-empty-seconds": "Pauses the world after the configured idle time with no players online.",
+  "player-idle-timeout": "Automatically kicks players after being idle too long.",
+  "prevent-proxy-connections": "Adds stricter checks for proxied or suspicious joins.",
+  "query.port": "Port used by the query service when enabled.",
+  "rate-limit": "Connection rate limit used to reduce abuse.",
+  "rcon.password": "Password used to authenticate remote console clients.",
+  "rcon.port": "Port used by remote console clients.",
+  "server-ip": "Specific network interface the server should bind to.",
+  "server-port": "Primary TCP port used by players to connect.",
+  "simulation-distance": "How far entities and redstone stay active around players.",
+  "spawn-protection": "Protected radius around world spawn for non-operators.",
+  "sync-chunk-writes": "Writes chunk data synchronously for safer but slower saves.",
+  "use-native-transport": "Uses the platform-native network transport when available.",
+  "view-distance": "How far terrain is sent to players."
+};
+
+const propertyDescription = (field: ServerPropertyField): string =>
+  PROPERTY_DESCRIPTIONS[field.key] || `Controls the "${field.label}" server property.`;
+
+const isSensitiveProperty = (key: string): boolean => {
+  const lower = key.toLowerCase();
+  return lower.includes("secret") || lower.includes("password");
 };
 
 const isConfigPath = (pathValue: string): boolean => {
@@ -59,17 +151,19 @@ const isAuthRelatedMessage = (value: string): boolean => {
 
 const viewFromPath = (pathName: string): View => {
   const lower = String(pathName || "/").toLowerCase();
+  if (lower === "/players") return "players";
   if (lower === "/files") return "files";
   if (lower === "/plugins-mods") return "plugins";
-  if (lower === "/settings") return "settings";
+  if (lower === "/settings" || lower === "/server-management") return "settings";
   if (lower === "/users") return "users";
   return "console";
 };
 
 const pathFromView = (view: View): string => {
+  if (view === "players") return "/players";
   if (view === "files") return "/files";
   if (view === "plugins") return "/plugins-mods";
-  if (view === "settings") return "/settings";
+  if (view === "settings") return "/server-management";
   if (view === "users") return "/users";
   return "/console";
 };
@@ -98,12 +192,16 @@ export default function App() {
 
   const [loginUsername, setLoginUsername] = useState(() => localStorage.getItem(STORAGE_KEY_LOGIN_EMAIL) || "");
   const [loginPassword, setLoginPassword] = useState(() => localStorage.getItem(STORAGE_KEY_LOGIN_PASSWORD) || "");
-  const [rememberCredentials, setRememberCredentials] = useState(() => localStorage.getItem(STORAGE_KEY_LOGIN_REMEMBER) === "1");
+  const [rememberEmail, setRememberEmail] = useState(() => localStorage.getItem(STORAGE_KEY_REMEMBER_EMAIL) === "1");
+  const [rememberPassword, setRememberPassword] = useState(() => localStorage.getItem(STORAGE_KEY_REMEMBER_PASSWORD) === "1");
+  const [rememberBoth, setRememberBoth] = useState(() => localStorage.getItem(STORAGE_KEY_REMEMBER_BOTH) === "1");
   const [loginError, setLoginError] = useState("");
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [forgotEmail, setForgotEmail] = useState("");
   const [forgotModalNotice, setForgotModalNotice] = useState("");
   const [forgotModalError, setForgotModalError] = useState("");
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showSetupPassword, setShowSetupPassword] = useState(false);
 
   const [servers, setServers] = useState<ServerProfile[]>([]);
   const [selectedServerId, setSelectedServerId] = useState("");
@@ -111,6 +209,10 @@ export default function App() {
   const [serverSettings, setServerSettings] = useState<ServerSettings>(DEFAULT_SETTINGS);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [serverProperties, setServerProperties] = useState<ServerPropertiesState>(DEFAULT_PROPERTIES);
+  const [eulaState, setEulaState] = useState<EulaState | null>(null);
+  const [newPropertyKey, setNewPropertyKey] = useState("");
+  const [newPropertyValue, setNewPropertyValue] = useState("");
   const [consoleLines, setConsoleLines] = useState<ConsoleLine[]>([]);
   const [consoleCursor, setConsoleCursor] = useState(0);
   const [consoleCommand, setConsoleCommand] = useState("");
@@ -120,7 +222,13 @@ export default function App() {
   const consoleScrollRef = useRef<HTMLDivElement>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [serverToDelete, setServerToDelete] = useState<ServerProfile | null>(null);
+  const [showRenameServerModal, setShowRenameServerModal] = useState(false);
+  const [serverToRename, setServerToRename] = useState<ServerProfile | null>(null);
+  const [renameServerName, setRenameServerName] = useState("");
   const [updatingServerId, setUpdatingServerId] = useState("");
+  const [hoveredServerId, setHoveredServerId] = useState("");
+  const [serverAddonSummaries, setServerAddonSummaries] = useState<Record<string, ServerAddonSummary | undefined>>({});
+  const [serverAddonLoadingId, setServerAddonLoadingId] = useState("");
   const [showAddServerModal, setShowAddServerModal] = useState(false);
   const [addServerMode, setAddServerMode] = useState<AddServerMode>("chooser");
 
@@ -172,6 +280,16 @@ export default function App() {
   const [forcePassword, setForcePassword] = useState("");
   const [forcePasswordConfirm, setForcePasswordConfirm] = useState("");
   const [forcePasswordError, setForcePasswordError] = useState("");
+  const [showForcePassword, setShowForcePassword] = useState(false);
+  const [showForcePasswordConfirm, setShowForcePasswordConfirm] = useState(false);
+  const [players, setPlayers] = useState<PlayerRecord[]>([]);
+  const [playersLoading, setPlayersLoading] = useState(false);
+  const [addPlayerUsername, setAddPlayerUsername] = useState("");
+  const [addPlayerWhitelisted, setAddPlayerWhitelisted] = useState(true);
+  const [addPlayerOperator, setAddPlayerOperator] = useState(false);
+  const [addPlayerBusy, setAddPlayerBusy] = useState(false);
+  const [showEulaModal, setShowEulaModal] = useState(false);
+  const [revealedPropertyKeys, setRevealedPropertyKeys] = useState<Record<string, boolean>>({});
 
   const canManageUsers = currentUser?.role === "owner";
   const canOperateServer = currentUser?.role === "owner" || currentUser?.role === "admin";
@@ -215,19 +333,37 @@ export default function App() {
   const loadStatus = async () => { if (!selectedServerId) return; setStatus(await api.serverStatus()); };
   const loadServerSettings = async () => {
     if (!selectedServerId) return;
+    const out = await api.getServerSettings();
+    setServerSettings({
+      startupScript: out.settings.startupScript || "",
+      autoRestart: !!out.settings.autoRestart,
+      ramMinGb: out.settings.ramMinGb ?? null,
+      ramMaxGb: out.settings.ramMaxGb ?? null,
+      serverIp: out.settings.serverIp || "",
+      serverPort: out.settings.serverPort ?? null,
+      playitEnabled: !!out.settings.playitEnabled,
+      playitCommand: out.settings.playitCommand || ""
+    });
+  };
+  const loadServerProperties = async () => {
+    if (!selectedServerId) return;
+    const out = await api.getServerProperties();
+    setServerProperties({
+      path: out.path,
+      mtime: out.mtime,
+      fields: out.fields
+    });
+  };
+  const loadEula = async () => {
+    if (!selectedServerId) return;
+    const out = await api.getEula();
+    setEulaState(out.eula);
+  };
+  const loadServerManagement = async () => {
+    if (!selectedServerId) return;
     setSettingsLoading(true);
     try {
-      const out = await api.getServerSettings();
-      setServerSettings({
-        startupScript: out.settings.startupScript || "",
-        autoRestart: !!out.settings.autoRestart,
-        ramMinGb: out.settings.ramMinGb ?? null,
-        ramMaxGb: out.settings.ramMaxGb ?? null,
-        serverIp: out.settings.serverIp || "",
-        serverPort: out.settings.serverPort ?? null,
-        playitEnabled: !!out.settings.playitEnabled,
-        playitCommand: out.settings.playitCommand || ""
-      });
+      await Promise.all([loadServerSettings(), loadServerProperties(), loadEula()]);
     } finally {
       setSettingsLoading(false);
     }
@@ -281,6 +417,12 @@ export default function App() {
     try {
       const out = await api.listPlugins();
       setPlugins(out.plugins);
+      if (selectedServerId) {
+        setServerAddonSummaries((prev) => ({
+          ...prev,
+          [selectedServerId]: { mode: "plugins", items: out.plugins.map((entry) => entry.pluginId) }
+        }));
+      }
       setSelectedAddonKeys((prev) => prev.filter((id) => !id.startsWith("plugin:") || out.plugins.some((p) => `plugin:${p.pluginId}` === id)));
     } finally { setPluginsLoading(false); }
   };
@@ -290,6 +432,12 @@ export default function App() {
     try {
       const out = await api.listMods();
       setMods(out.mods);
+      if (selectedServerId) {
+        setServerAddonSummaries((prev) => ({
+          ...prev,
+          [selectedServerId]: { mode: "mods", items: out.mods.map((entry) => entry.modId) }
+        }));
+      }
       setSelectedAddonKeys((prev) => prev.filter((id) => !id.startsWith("mod:") || out.mods.some((m) => `mod:${m.modId}` === id)));
     } finally { setModsLoading(false); }
   };
@@ -299,6 +447,25 @@ export default function App() {
     const out = await api.listUsers();
     setUsers(out.users);
     setUserRoleDraft(Object.fromEntries(out.users.map((u) => [u.id, u.role])));
+  };
+  const loadServerAddonSummary = async (server: ServerProfile) => {
+    setServerAddonLoadingId(server.id);
+    try {
+      const out = await api.getServerAddonSummary(server.id);
+      setServerAddonSummaries((prev) => ({ ...prev, [server.id]: out.summary }));
+    } finally {
+      setServerAddonLoadingId("");
+    }
+  };
+  const loadPlayers = async () => {
+    if (!selectedServerId) return;
+    setPlayersLoading(true);
+    try {
+      const out = await api.listPlayers();
+      setPlayers(out.players);
+    } finally {
+      setPlayersLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -345,7 +512,9 @@ export default function App() {
     api.setActiveServerId(selectedServerId);
     loadStatus().catch((e) => setMessage(e.message));
     loadConsoleHistory(0).catch((e) => setMessage(e.message));
+    loadEula().catch((e) => setMessage(e.message));
     if (activeView === "files") loadFiles(".").catch((e) => setMessage(e.message));
+    if (activeView === "players") loadPlayers().catch((e) => setMessage(e.message));
     if (activeView === "plugins" && addonsEnabled) {
       if (addonsMode === "plugins") {
         loadPlugins().catch((e) => setMessage(e.message));
@@ -353,6 +522,7 @@ export default function App() {
         loadMods().catch((e) => setMessage(e.message));
       }
     }
+    if (activeView === "settings") loadServerManagement().catch((e) => setMessage(e.message));
   }, [selectedServerId]);
 
   useEffect(() => {
@@ -378,6 +548,7 @@ export default function App() {
 
   useEffect(() => { if (showSetupModal) loadTypes().catch(() => void 0); }, [showSetupModal]);
   useEffect(() => {
+    if (activeView === "players" && selectedServerId) loadPlayers().catch((e) => setMessage(e.message));
     if (activeView === "users") refreshUsers().catch((e) => setMessage(e.message));
     if (activeView === "console" && selectedServerId) loadConsoleHistory(0).catch((e) => setMessage(e.message));
     if (activeView === "files" && selectedServerId) loadFiles(filesPath).catch((e) => setMessage(e.message));
@@ -388,7 +559,7 @@ export default function App() {
         loadMods().catch((e) => setMessage(e.message));
       }
     }
-    if (activeView === "settings" && selectedServerId) loadServerSettings().catch((e) => setMessage(e.message));
+    if (activeView === "settings" && selectedServerId) loadServerManagement().catch((e) => setMessage(e.message));
   }, [activeView, currentUser?.role, selectedServerId, addonsEnabled, addonsMode]);
 
   useEffect(() => {
@@ -523,15 +694,21 @@ export default function App() {
     if (!email.includes("@")) return setLoginError("Use email address to log in.");
     try {
       await api.authLogin(email, loginPassword);
-      if (rememberCredentials) {
-        localStorage.setItem(STORAGE_KEY_LOGIN_REMEMBER, "1");
+      const shouldRememberEmail = rememberBoth || rememberEmail;
+      const shouldRememberPassword = rememberBoth || rememberPassword;
+      if (shouldRememberEmail) {
         localStorage.setItem(STORAGE_KEY_LOGIN_EMAIL, email);
+      } else {
+        localStorage.removeItem(STORAGE_KEY_LOGIN_EMAIL);
+      }
+      if (shouldRememberPassword) {
         localStorage.setItem(STORAGE_KEY_LOGIN_PASSWORD, loginPassword);
       } else {
-        localStorage.removeItem(STORAGE_KEY_LOGIN_REMEMBER);
-        localStorage.removeItem(STORAGE_KEY_LOGIN_EMAIL);
         localStorage.removeItem(STORAGE_KEY_LOGIN_PASSWORD);
       }
+      localStorage.setItem(STORAGE_KEY_REMEMBER_EMAIL, shouldRememberEmail ? "1" : "0");
+      localStorage.setItem(STORAGE_KEY_REMEMBER_PASSWORD, shouldRememberPassword ? "1" : "0");
+      localStorage.setItem(STORAGE_KEY_REMEMBER_BOTH, rememberBoth ? "1" : "0");
       await loadMe();
       await Promise.all([loadTypes(), loadServers()]);
       setActiveView(viewFromPath(window.location.pathname));
@@ -598,6 +775,15 @@ export default function App() {
     await loadServers();
   };
   const deleteServerNow = async () => { if (!serverToDelete) return; await api.deleteServer(serverToDelete.id); setShowDeleteModal(false); setServerToDelete(null); await loadServers(); };
+  const renameServerNow = async () => {
+    if (!serverToRename) return;
+    const out = await api.renameServer(serverToRename.id, renameServerName.trim());
+    setShowRenameServerModal(false);
+    setServerToRename(null);
+    setRenameServerName("");
+    await loadServers();
+    setSelectedServerId(out.server.id);
+  };
   const updateServerNow = async (server: ServerProfile) => {
     if (updatingServerId) return;
     setUpdatingServerId(server.id);
@@ -629,15 +815,40 @@ export default function App() {
     if (!selectedServerId) return;
     if (serverActionBusy) return;
     goToView("console");
-    setConsoleLines([]);
-    setConsoleCursor(0);
     setServerActionBusy(true);
     try {
-      await api.clearConsoleHistory();
-      if (action === "start") await api.startServer();
-      if (action === "stop") await api.stopServer();
-      if (action === "restart") await api.restartServer();
+      if (action === "start") {
+        const out = await api.startServer();
+        if (out.kind === "eula_required") {
+          setEulaState(out.eula);
+          setShowEulaModal(true);
+          return;
+        }
+      } else {
+        setConsoleLines([]);
+        setConsoleCursor(0);
+        await api.clearConsoleHistory();
+        if (action === "stop") await api.stopServer();
+        if (action === "restart") await api.restartServer();
+      }
       await Promise.all([loadStatus(), loadConsoleHistory(0)]);
+    } finally {
+      setServerActionBusy(false);
+    }
+  };
+
+  const acceptEulaAndStart = async () => {
+    if (!selectedServerId) return;
+    setServerActionBusy(true);
+    try {
+      setConsoleLines([]);
+      setConsoleCursor(0);
+      await api.clearConsoleHistory();
+      const out = await api.startServerAfterEula();
+      if (out.kind === "started") {
+        setShowEulaModal(false);
+        await Promise.all([loadStatus(), loadConsoleHistory(0), loadEula()]);
+      }
     } finally {
       setServerActionBusy(false);
     }
@@ -733,15 +944,100 @@ export default function App() {
   const saveServerSettings = async () => {
     setSettingsSaving(true);
     try {
-      const out = await api.updateServerSettings({
-        ...serverSettings,
-        startupScript: ""
-      });
-      setServerSettings(out.settings);
-      setMessage("Server settings saved.");
+      const [settingsOut, propertiesOut] = await Promise.all([
+        api.updateServerSettings({
+          ...serverSettings,
+          startupScript: ""
+        }),
+        api.updateServerProperties({
+          expectedMtime: serverProperties.mtime,
+          fields: serverProperties.fields
+            .map((field) => ({ key: field.key.trim(), value: field.value }))
+            .filter((field) => !!field.key)
+        })
+      ]);
+      setServerSettings(settingsOut.settings);
+      setServerProperties(propertiesOut);
+      await loadEula();
+      setMessage("Server management saved.");
     } finally {
       setSettingsSaving(false);
     }
+  };
+
+  const addCustomProperty = () => {
+    const key = newPropertyKey.trim();
+    if (!key) return setMessage("Property key is required.");
+    if (serverProperties.fields.some((field) => field.key.toLowerCase() === key.toLowerCase())) {
+      return setMessage("That property already exists.");
+    }
+    setServerProperties((prev) => ({
+      ...prev,
+      fields: [
+        ...prev.fields,
+        {
+          key,
+          value: newPropertyValue,
+          label: key,
+          category: "advanced",
+          control: "text",
+          isCustom: true
+        }
+      ]
+    }));
+    setNewPropertyKey("");
+    setNewPropertyValue("");
+  };
+
+  const updatePropertyField = (key: string, value: string) => {
+    setServerProperties((prev) => ({
+      ...prev,
+      fields: prev.fields.map((field) => (field.key === key ? { ...field, value } : field))
+    }));
+  };
+
+  const togglePropertyVisibility = (key: string) => {
+    setRevealedPropertyKeys((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const removePropertyField = (key: string) => {
+    setServerProperties((prev) => ({
+      ...prev,
+      fields: prev.fields.filter((field) => field.key !== key)
+    }));
+  };
+
+  const addPlayerNow = async () => {
+    const username = addPlayerUsername.trim();
+    if (!username) return setMessage("Player username is required.");
+    if (!addPlayerWhitelisted && !addPlayerOperator) return setMessage("Choose whitelist and/or operator.");
+    setAddPlayerBusy(true);
+    try {
+      await api.addPlayer({
+        username,
+        whitelisted: addPlayerWhitelisted || addPlayerOperator,
+        operator: addPlayerOperator
+      });
+      setAddPlayerUsername("");
+      setAddPlayerWhitelisted(true);
+      setAddPlayerOperator(false);
+      await Promise.all([loadPlayers(), loadEula()]);
+    } finally {
+      setAddPlayerBusy(false);
+    }
+  };
+
+  const togglePlayerState = async (
+    player: PlayerRecord,
+    patch: Partial<Pick<PlayerRecord, "whitelisted" | "operator" | "bypassesPlayerLimit">>
+  ) => {
+    await api.updatePlayer(player.uuid, patch);
+    await loadPlayers();
+  };
+
+  const removePlayerNow = async (player: PlayerRecord) => {
+    await api.removePlayer(player.uuid, player.name);
+    await loadPlayers();
   };
 
   const openServerModal = (mode: AddServerMode) => {
@@ -760,6 +1056,14 @@ export default function App() {
     if (window.location.pathname !== nextPath) window.history.pushState({}, "", nextPath);
   };
 
+  const groupedPropertyFields = (Object.keys(PROPERTY_CATEGORY_LABELS) as Array<ServerPropertyField["category"]>)
+    .map((category) => ({
+      category,
+      label: PROPERTY_CATEGORY_LABELS[category],
+      fields: serverProperties.fields.filter((field) => field.category === category)
+    }))
+    .filter((group) => group.fields.length > 0);
+
   if (!isAuthenticated || showSetupModal) {
     return (
       <div className="shell auth-shell">
@@ -769,7 +1073,7 @@ export default function App() {
               <h2 className="auth-title">Sign Up</h2>
               <p className="muted auth-subtitle">Initial Setup ({setupStep + 1}/5)</p>
               {setupStep === 0 && <div className="auth-form-stack"><label>Username</label><input value={setupUsername} onChange={(e) => setSetupUsername(e.target.value)} placeholder="Set username" autoFocus /><label>Email</label><input type="email" value={setupEmail} onChange={(e) => setSetupEmail(e.target.value)} placeholder="Owner email" /></div>}
-              {setupStep === 1 && <div className="auth-form-stack"><label>Password</label><input type="password" value={setupPassword} onChange={(e) => setSetupPassword(e.target.value)} placeholder="Set password" autoFocus /></div>}
+              {setupStep === 1 && <div className="auth-form-stack"><label>Password</label><div className="password-input-wrap"><input type={showSetupPassword ? "text" : "password"} value={setupPassword} onChange={(e) => setSetupPassword(e.target.value)} placeholder="Set password" autoFocus /><button type="button" className="password-toggle-btn" onClick={() => setShowSetupPassword((prev) => !prev)}>{showSetupPassword ? "Hide" : "Show"}</button></div></div>}
               {setupStep === 2 && <div className="auth-form-stack"><label>Server Name</label><input value={setupServerName} onChange={(e) => setSetupServerName(e.target.value)} placeholder="Set server name" autoFocus /></div>}
               {setupStep === 3 && <div className="auth-form-stack"><label>Server Type</label><div className="jar-options">{serverTypeOptions.map((t) => <button key={t.id} className={setupServerType === t.id ? "menu-btn active" : "menu-btn"} disabled={!t.enabled} title={t.enabled ? t.label : t.tooltip || "soon"} onClick={() => t.enabled && setSetupServerType(t.id as ServerInstallType)}>{t.label}</button>)}</div></div>}
               {setupStep === 4 && <div className="auth-form-stack"><label>Version</label><select value={setupVersion} onChange={(e) => setSetupVersion(e.target.value)}><option value="">Choose version</option>{setupVersionOptions.map((v) => <option key={v} value={v}>{v}</option>)}</select></div>}
@@ -780,7 +1084,7 @@ export default function App() {
             <section className="auth-panel login-panel">
               <h2 className="auth-title login-title">Log In</h2>
               {needsBootstrap && <div className="banner warn">No account exists yet. Run initial setup.</div>}
-              <div className="auth-form-stack"><label>Email</label><input type="email" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} placeholder="Email address" /><label>Password</label><input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLogin().catch((err) => setLoginError(err.message)); }} placeholder="Password" /><div className="login-meta-row"><button className="link-btn" onClick={() => { setForgotEmail(""); setForgotModalNotice(""); setForgotModalError(""); setShowForgotModal(true); }}>Forgot password</button><span className="meta-divider" aria-hidden="true">|</span><label className="remember-row"><input type="checkbox" checked={rememberCredentials} onChange={(e) => { const next = e.target.checked; setRememberCredentials(next); if (!next) { localStorage.removeItem(STORAGE_KEY_LOGIN_REMEMBER); localStorage.removeItem(STORAGE_KEY_LOGIN_EMAIL); localStorage.removeItem(STORAGE_KEY_LOGIN_PASSWORD); } }} />Remember login</label></div></div>
+              <div className="auth-form-stack"><label>Email</label><input type="email" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} placeholder="Email address" /><label>Password</label><div className="password-input-wrap"><input type={showLoginPassword ? "text" : "password"} value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLogin().catch((err) => setLoginError(err.message)); }} placeholder="Password" /><button type="button" className="password-toggle-btn" onClick={() => setShowLoginPassword((prev) => !prev)}>{showLoginPassword ? "Hide" : "Show"}</button></div><div className="remember-options remember-options-grid"><label className="remember-row"><input type="checkbox" checked={rememberEmail} onChange={(e) => { const next = e.target.checked; setRememberEmail(next); if (!next && !rememberBoth) { localStorage.removeItem(STORAGE_KEY_LOGIN_EMAIL); localStorage.setItem(STORAGE_KEY_REMEMBER_EMAIL, "0"); } }} />Remember email</label><button type="button" className="remember-row remember-action-row" onClick={() => { setForgotEmail(""); setForgotModalNotice(""); setForgotModalError(""); setShowForgotModal(true); }}><span className="remember-action-icon"><i className="fa-solid fa-key" aria-hidden="true" /></span><span>Forgot password</span></button><label className="remember-row"><input type="checkbox" checked={rememberPassword} onChange={(e) => { const next = e.target.checked; setRememberPassword(next); if (!next && !rememberBoth) { localStorage.removeItem(STORAGE_KEY_LOGIN_PASSWORD); localStorage.setItem(STORAGE_KEY_REMEMBER_PASSWORD, "0"); } }} />Remember password</label><label className="remember-row"><input type="checkbox" checked={rememberBoth} onChange={(e) => { const next = e.target.checked; setRememberBoth(next); if (next) { setRememberEmail(true); setRememberPassword(true); } }} />Remember both</label></div></div>
               {!!loginError && <div className="banner warn">{loginError}</div>}
               <button className="auth-primary-btn" onClick={() => doLogin().catch((e) => setLoginError(e.message))}>Log In</button>
               {needsBootstrap && <button onClick={() => { setShowSetupModal(true); window.history.pushState({}, "", "/setup"); }}>Open Setup</button>}
@@ -834,7 +1138,11 @@ export default function App() {
         <div className="workspace">
           <aside className="servers-column card">
             <h2>Servers</h2>
-            <div className="server-list-vertical">{servers.map((server) => <div key={server.id} className={selectedServerId === server.id ? "server-pill active server-item" : "server-pill server-item"} onClick={() => setSelectedServerId(server.id)}><img className="server-list-icon" src={`/api/servers/${encodeURIComponent(server.id)}/icon`} alt={`${server.name} icon`} /><div className="server-pill-text"><strong>{server.name}</strong><small>{server.type} {server.version}</small></div>{canOperateServer && server.type === "purpur" && <button className="server-update-btn" aria-label="Update server jar" onClick={(e) => { e.stopPropagation(); updateServerNow(server).catch((err) => setMessage(err.message)); }} title="Update server jar" disabled={!!updatingServerId}><i className="fa-solid fa-rotate-right" aria-hidden="true" /></button>}{canOperateServer && <button className="server-delete-btn" aria-label="Delete server" onClick={(e) => { e.stopPropagation(); setServerToDelete(server); setShowDeleteModal(true); }} title="Delete"><i className="fa-solid fa-trash-can" aria-hidden="true" /></button>}</div>)}</div>
+            <div className="server-list-vertical">{servers.map((server) => {
+              const addonSummary = serverAddonSummaries[server.id];
+              const summaryTitle = addonSummary?.mode === "plugins" ? "Plugins" : addonSummary?.mode === "mods" ? "Mods" : "Mods/Plugins";
+              return <div key={server.id} className={selectedServerId === server.id ? "server-pill active server-item" : "server-pill server-item"} onClick={() => setSelectedServerId(server.id)}><img className="server-list-icon" src={`/api/servers/${encodeURIComponent(server.id)}/icon`} alt={`${server.name} icon`} /><div className="server-pill-text"><strong>{server.name}</strong><small>{server.type} {server.version}</small></div><div className="server-item-meta">{<div className="server-info-wrap" onMouseEnter={() => loadServerAddonSummary(server).catch((e) => setMessage(e.message))}><button className="server-info-btn" aria-label={`${server.name} addons`} title="Server addons" onClick={(e) => e.stopPropagation()}><i className="fa-solid fa-circle-info" aria-hidden="true" /></button><div className="server-info-popover" onClick={(e) => e.stopPropagation()}><strong>{summaryTitle}</strong>{serverAddonLoadingId === server.id && !addonSummary ? <div className="muted">Loading...</div> : addonSummary && addonSummary.items.length ? <ul>{addonSummary.items.slice(0, 8).map((item) => <li key={item}>{item}</li>)}</ul> : <div className="muted">No mods/plugins...</div>}</div></div>}{canOperateServer && <button className="server-rename-btn" aria-label="Rename server" onClick={(e) => { e.stopPropagation(); setServerToRename(server); setRenameServerName(server.name); setShowRenameServerModal(true); }} title="Rename server"><i className="fa-solid fa-pencil" aria-hidden="true" /></button>}{canOperateServer && server.type === "purpur" && <button className="server-update-btn" aria-label="Update server jar" onClick={(e) => { e.stopPropagation(); updateServerNow(server).catch((err) => setMessage(err.message)); }} title="Update server jar" disabled={!!updatingServerId}><i className="fa-solid fa-rotate-right" aria-hidden="true" /></button>}{canOperateServer && <button className="server-delete-btn" aria-label="Delete server" onClick={(e) => { e.stopPropagation(); setServerToDelete(server); setShowDeleteModal(true); }} title="Delete"><i className="fa-solid fa-trash-can" aria-hidden="true" /></button>}</div></div>;
+            })}</div>
             {canOperateServer && (
               <div className="server-sidebar-actions">
                 <button onClick={() => openServerModal("import")}><i className="fa-solid fa-file-import" aria-hidden="true" /> Import Server</button>
@@ -873,6 +1181,87 @@ export default function App() {
                     placeholder="Type command..."
                   />
                   <button className="btn-start" onClick={() => sendConsoleCommand().catch((e) => setMessage(e.message))}>Send</button>
+                </div>
+              </div>
+            </>}
+
+            {activeView === "players" && <>
+              <h2>Players</h2>
+              <div className="view-layout">
+                <div className="settings-card modern-settings-card">
+                  <div className="players-toolbar">
+                    <input
+                      value={addPlayerUsername}
+                      onChange={(e) => setAddPlayerUsername(e.target.value)}
+                      placeholder="Minecraft username"
+                      disabled={!canOperateServer || addPlayerBusy}
+                    />
+                    <label className="row muted">
+                      <input
+                        type="checkbox"
+                        checked={addPlayerWhitelisted}
+                        disabled={!canOperateServer || addPlayerBusy}
+                        onChange={(e) => setAddPlayerWhitelisted(e.target.checked)}
+                      />
+                      Whitelist
+                    </label>
+                    <label className="row muted">
+                      <input
+                        type="checkbox"
+                        checked={addPlayerOperator}
+                        disabled={!canOperateServer || addPlayerBusy}
+                        onChange={(e) => {
+                          const next = e.target.checked;
+                          setAddPlayerOperator(next);
+                          if (next) setAddPlayerWhitelisted(true);
+                        }}
+                      />
+                      Operator
+                    </label>
+                    <button className="btn-start" disabled={!canOperateServer || addPlayerBusy} onClick={() => addPlayerNow().catch((e) => setMessage(e.message))}>
+                      <i className="fa-solid fa-user-plus" aria-hidden="true" /> {addPlayerBusy ? "Adding..." : "Add Player"}
+                    </button>
+                  </div>
+                  <div className="players-list">
+                    {playersLoading && <div className="empty-list">Loading players...</div>}
+                    {!playersLoading && !players.length && <div className="empty-list">No whitelist or operator entries yet.</div>}
+                    {!playersLoading && players.map((player) => (
+                      <div key={player.uuid} className="player-row">
+                        <div className="player-main">
+                          <img className="player-head" src={player.headUrl} alt={`${player.name} head`} />
+                          <div className="player-meta">
+                            <strong>{player.name}</strong>
+                            <small className="muted">{player.uuid}</small>
+                          </div>
+                        </div>
+                        <div className="player-actions">
+                          <label className="row muted">
+                            <input
+                              type="checkbox"
+                              checked={player.whitelisted}
+                              disabled={!canOperateServer}
+                              onChange={(e) => togglePlayerState(player, { whitelisted: e.target.checked }).catch((err) => setMessage(err.message))}
+                            />
+                            Whitelisted
+                          </label>
+                          <label className="row muted">
+                            <input
+                              type="checkbox"
+                              checked={player.operator}
+                              disabled={!canOperateServer}
+                              onChange={(e) => togglePlayerState(player, { operator: e.target.checked, whitelisted: e.target.checked ? true : player.whitelisted }).catch((err) => setMessage(err.message))}
+                            />
+                            Operator
+                          </label>
+                          {canOperateServer && (
+                            <button className="btn-danger" onClick={() => removePlayerNow(player).catch((e) => setMessage(e.message))}>
+                              <i className="fa-solid fa-user-minus" aria-hidden="true" /> Remove
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </>}
@@ -982,86 +1371,183 @@ export default function App() {
             </>}
 
             {activeView === "settings" && <>
-              <h2>Settings</h2>
+              <h2>Server Management</h2>
               <div className="view-layout">
                 {settingsLoading ? (
-                  <div className="empty-list">Loading settings...</div>
+                  <div className="empty-list">Loading server management...</div>
                 ) : (
                   <div className="settings-layout">
                     <div className="settings-card modern-settings-card">
+                      <div className="management-section">
+                        <h3>EULA</h3>
+                        <div className="eula-card">
+                          <div>
+                            <strong>{eulaState?.accepted ? "Accepted" : "Not accepted"}</strong>
+                            <p className="muted">Minecraft requires EULA acceptance before the server can start.</p>
+                          </div>
+                          <div className="row wrap">
+                            <a className="playit-link-btn" href={eulaState?.link || "https://aka.ms/MinecraftEULA"} target="_blank" rel="noreferrer">Read Minecraft's EULA</a>
+                            {canOperateServer && (
+                              <button onClick={() => api.setEula(!(eulaState?.accepted)).then((out) => setEulaState(out.eula)).catch((e) => setMessage(e.message))}>
+                                {eulaState?.accepted ? "Mark Unaccepted" : "Accept EULA"}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="management-section">
+                        <h3>Runtime Settings</h3>
                       <div className="settings-grid">
-                      <label className="settings-field">
-                        <span>Auto Restart</span>
-                        <select
-                          value={serverSettings.autoRestart ? "true" : "false"}
-                          onChange={(e) => setServerSettings((prev) => ({ ...prev, autoRestart: e.target.value === "true" }))}
-                        >
-                          <option value="true">Enabled</option>
-                          <option value="false">Disabled</option>
-                        </select>
-                      </label>
+                        <label className="settings-field">
+                          <span>Auto Restart</span>
+                          <select
+                            value={serverSettings.autoRestart ? "true" : "false"}
+                            onChange={(e) => setServerSettings((prev) => ({ ...prev, autoRestart: e.target.value === "true" }))}
+                          >
+                            <option value="true">Enabled</option>
+                            <option value="false">Disabled</option>
+                          </select>
+                        </label>
 
-                      <label className="settings-field">
-                        <span>Playit Tunnel</span>
-                        <select
-                          value={serverSettings.playitEnabled ? "true" : "false"}
-                          onChange={(e) => setServerSettings((prev) => ({ ...prev, playitEnabled: e.target.value === "true" }))}
-                        >
-                          <option value="false">Disabled</option>
-                          <option value="true">Enabled</option>
-                        </select>
-                      </label>
+                        <label className="settings-field">
+                          <span>Playit Tunnel</span>
+                          <select
+                            value={serverSettings.playitEnabled ? "true" : "false"}
+                            onChange={(e) => setServerSettings((prev) => ({ ...prev, playitEnabled: e.target.value === "true" }))}
+                          >
+                            <option value="false">Disabled</option>
+                            <option value="true">Enabled</option>
+                          </select>
+                        </label>
 
-                      <label className="settings-field">
-                        <span>RAM Min (GB)</span>
-                        <input
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={serverSettings.ramMinGb ?? ""}
-                          onChange={(e) => setServerSettings((prev) => ({ ...prev, ramMinGb: e.target.value === "" ? null : Number(e.target.value) }))}
-                        />
-                      </label>
+                        <label className="settings-field">
+                          <span>RAM Min (GB)</span>
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            value={serverSettings.ramMinGb ?? ""}
+                            onChange={(e) => setServerSettings((prev) => ({ ...prev, ramMinGb: e.target.value === "" ? null : Number(e.target.value) }))}
+                          />
+                        </label>
 
-                      <label className="settings-field">
-                        <span>RAM Max (GB)</span>
-                        <input
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={serverSettings.ramMaxGb ?? ""}
-                          onChange={(e) => setServerSettings((prev) => ({ ...prev, ramMaxGb: e.target.value === "" ? null : Number(e.target.value) }))}
-                        />
-                      </label>
+                        <label className="settings-field">
+                          <span>RAM Max (GB)</span>
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            value={serverSettings.ramMaxGb ?? ""}
+                            onChange={(e) => setServerSettings((prev) => ({ ...prev, ramMaxGb: e.target.value === "" ? null : Number(e.target.value) }))}
+                          />
+                        </label>
 
-                      <label className="settings-field">
-                        <span>Server IP</span>
-                        <input
-                          value={serverSettings.serverIp}
-                          onChange={(e) => setServerSettings((prev) => ({ ...prev, serverIp: e.target.value }))}
-                          placeholder="Leave blank for all interfaces"
-                        />
-                      </label>
+                        <label className="settings-field">
+                          <span>Server IP</span>
+                          <input
+                            value={serverSettings.serverIp}
+                            onChange={(e) => setServerSettings((prev) => ({ ...prev, serverIp: e.target.value }))}
+                            placeholder="Leave blank for all interfaces"
+                          />
+                        </label>
 
-                      <label className="settings-field">
-                        <span>Server Port</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={65535}
-                          value={serverSettings.serverPort ?? ""}
-                          onChange={(e) => setServerSettings((prev) => ({ ...prev, serverPort: e.target.value === "" ? null : Number(e.target.value) }))}
-                        />
-                      </label>
+                        <label className="settings-field">
+                          <span>Server Port</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={65535}
+                            value={serverSettings.serverPort ?? ""}
+                            onChange={(e) => setServerSettings((prev) => ({ ...prev, serverPort: e.target.value === "" ? null : Number(e.target.value) }))}
+                          />
+                        </label>
 
-                      <label className="settings-field settings-field-wide">
-                        <span>Playit Command</span>
-                        <input
-                          value={serverSettings.playitCommand}
-                          onChange={(e) => setServerSettings((prev) => ({ ...prev, playitCommand: e.target.value }))}
-                          placeholder="playit"
-                        />
-                      </label>
+                        <label className="settings-field settings-field-wide">
+                          <span>Playit Command</span>
+                          <input
+                            value={serverSettings.playitCommand}
+                            onChange={(e) => setServerSettings((prev) => ({ ...prev, playitCommand: e.target.value }))}
+                            placeholder="playit"
+                          />
+                        </label>
+                      </div>
+                      </div>
+
+                      <div className="management-section">
+                        <h3>Server Properties</h3>
+                        {groupedPropertyFields.map((group) => (
+                          <div key={group.category} className="properties-group management-subcard">
+                            <div className="properties-group-head">
+                              <div>
+                                <h4>{group.label}</h4>
+                                <p className="muted">{PROPERTY_CATEGORY_DESCRIPTIONS[group.category]}</p>
+                              </div>
+                            </div>
+                            <div className="properties-grid">
+                              {group.fields.map((field) => {
+                                const sensitive = isSensitiveProperty(field.key);
+                                const isRevealed = !!revealedPropertyKeys[field.key];
+                                const description = propertyDescription(field);
+                                return (
+                                  <div key={field.key} className="property-card">
+                                    <div className="property-card-head">
+                                      <div className="property-title-wrap">
+                                        <span>{field.label}</span>
+                                        <div className="property-info-wrap">
+                                          <button type="button" className="property-info-btn" aria-label={`About ${field.label}`}>
+                                            <i className="fa-solid fa-circle-info" aria-hidden="true" />
+                                          </button>
+                                          <div className="property-tooltip">{description}</div>
+                                        </div>
+                                      </div>
+                                      <small className="muted property-key">{field.key}</small>
+                                    </div>
+                                    <div className="property-input-wrap">
+                                      {field.control === "boolean" ? (
+                                        <select value={field.value} onChange={(e) => updatePropertyField(field.key, e.target.value)}>
+                                          <option value="true">True</option>
+                                          <option value="false">False</option>
+                                        </select>
+                                      ) : field.control === "select" ? (
+                                        <select value={field.value} onChange={(e) => updatePropertyField(field.key, e.target.value)}>
+                                          {(field.options || []).map((option) => <option key={option} value={option}>{option}</option>)}
+                                        </select>
+                                      ) : (
+                                        <div className="password-input-wrap property-value-wrap">
+                                          <input
+                                            type={sensitive && !isRevealed ? "password" : field.control === "number" ? "number" : "text"}
+                                            value={field.value}
+                                            onChange={(e) => updatePropertyField(field.key, e.target.value)}
+                                          />
+                                          {sensitive && (
+                                            <button type="button" className="password-toggle-btn" onClick={() => togglePropertyVisibility(field.key)}>
+                                              {isRevealed ? "Hide" : "Show"}
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div className="property-card-footer">
+                                      {canOperateServer && field.isCustom && (
+                                        <button type="button" className="list-action-btn property-remove-btn" onClick={() => removePropertyField(field.key)}>
+                                          Remove
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                        {canOperateServer && (
+                          <div className="custom-property-row">
+                            <input value={newPropertyKey} onChange={(e) => setNewPropertyKey(e.target.value)} placeholder="custom.property-key" />
+                            <input value={newPropertyValue} onChange={(e) => setNewPropertyValue(e.target.value)} placeholder="value" />
+                            <button onClick={addCustomProperty}>Add Property</button>
+                          </div>
+                        )}
                       </div>
 
                       <div className="playit-section">
@@ -1088,9 +1574,9 @@ export default function App() {
                       </div>
                     </div>
                     <div className="row settings-actions settings-bottom-actions">
-                      <button onClick={() => loadServerSettings().catch((e) => setMessage(e.message))}><i className="fa-solid fa-rotate-left" aria-hidden="true" /> Reset</button>
-                      <button className="btn-start" disabled={settingsSaving} onClick={() => saveServerSettings().catch((e) => setMessage(e.message))}>
-                        <i className="fa-solid fa-floppy-disk" aria-hidden="true" /> {settingsSaving ? "Saving..." : "Save Settings"}
+                      <button onClick={() => loadServerManagement().catch((e) => setMessage(e.message))}><i className="fa-solid fa-rotate-left" aria-hidden="true" /> Reset</button>
+                      <button className="btn-start" disabled={settingsSaving || !canOperateServer} onClick={() => saveServerSettings().catch((e) => setMessage(e.message))}>
+                        <i className="fa-solid fa-floppy-disk" aria-hidden="true" /> {settingsSaving ? "Saving..." : "Save Server Management"}
                       </button>
                     </div>
                   </div>
@@ -1198,9 +1684,30 @@ export default function App() {
           </div>
         )}
 
-        {showMenuDrawer && <div className="menu-drawer-backdrop" onClick={() => setShowMenuDrawer(false)}><aside className="menu-drawer" onClick={(e) => e.stopPropagation()}><div className="menu-drawer-header"><h3>MC Control Panel</h3><button className="menu-toggle-btn" onClick={() => setShowMenuDrawer(false)}><img src="/minecraft-icon.png" alt="Toggle menu" className="menu-toggle-logo" /></button></div><nav className="menu-drawer-nav"><button className={activeView === "console" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("console"); setShowMenuDrawer(false); }}>Console</button><button className={activeView === "files" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("files"); setShowMenuDrawer(false); }}>Files</button><button disabled={!addonsEnabled} title={!addonsEnabled ? "Disabled for vanilla servers" : "Plugins/Mods"} className={activeView === "plugins" ? "menu-btn active" : "menu-btn"} onClick={() => { if (!addonsEnabled) return; goToView("plugins"); setShowMenuDrawer(false); }}>Plugins/Mods</button><button className={activeView === "settings" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("settings"); setShowMenuDrawer(false); }}>Settings</button>{canManageUsers && <button className={activeView === "users" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("users"); setShowMenuDrawer(false); }}>Users</button>}</nav></aside></div>}
+        {showMenuDrawer && <div className="menu-drawer-backdrop" onClick={() => setShowMenuDrawer(false)}><aside className="menu-drawer" onClick={(e) => e.stopPropagation()}><div className="menu-drawer-header"><h3>MC Control Panel</h3><button className="menu-toggle-btn" onClick={() => setShowMenuDrawer(false)}><img src="/minecraft-icon.png" alt="Toggle menu" className="menu-toggle-logo" /></button></div><nav className="menu-drawer-nav"><button className={activeView === "console" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("console"); setShowMenuDrawer(false); }}>Console</button><button className={activeView === "players" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("players"); setShowMenuDrawer(false); }}>Players</button><button className={activeView === "files" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("files"); setShowMenuDrawer(false); }}>Files</button><button disabled={!addonsEnabled} title={!addonsEnabled ? "Disabled for vanilla servers" : "Plugins/Mods"} className={activeView === "plugins" ? "menu-btn active" : "menu-btn"} onClick={() => { if (!addonsEnabled) return; goToView("plugins"); setShowMenuDrawer(false); }}>Plugins/Mods</button><button className={activeView === "settings" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("settings"); setShowMenuDrawer(false); }}>Server Management</button>{canManageUsers && <button className={activeView === "users" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("users"); setShowMenuDrawer(false); }}>Users</button>}</nav></aside></div>}
 
         {showDeleteModal && serverToDelete && <div className="modal-backdrop" onClick={() => setShowDeleteModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><h3>Delete Server</h3><p>Delete <strong>{serverToDelete.name}</strong>? This cannot be undone.</p><div className="row"><button onClick={() => setShowDeleteModal(false)}>Cancel</button><button className="btn-danger" onClick={() => deleteServerNow().catch((e) => setMessage(e.message))}>Delete</button></div></div></div>}
+
+        {showRenameServerModal && serverToRename && <div className="modal-backdrop" onClick={() => setShowRenameServerModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><h3>Rename Server</h3><p>Rename <strong>{serverToRename.name}</strong> and its server folder.</p><input value={renameServerName} onChange={(e) => setRenameServerName(e.target.value)} placeholder="New server name" autoFocus /><div className="row"><button onClick={() => setShowRenameServerModal(false)}>Cancel</button><button className="btn-start" onClick={() => renameServerNow().catch((e) => setMessage(e.message))}>Rename</button></div></div></div>}
+
+        {showEulaModal && (
+          <div className="modal-backdrop" onClick={() => setShowEulaModal(false)}>
+            <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+              <h3>Minecraft EULA Required</h3>
+              <p>This server cannot start until the Minecraft EULA is accepted.</p>
+              <p className="muted">Review the EULA before continuing.</p>
+              <div className="row wrap">
+                <a className="playit-link-btn" href={eulaState?.link || "https://aka.ms/MinecraftEULA"} target="_blank" rel="noreferrer">Read Minecraft's EULA</a>
+              </div>
+              <div className="row">
+                <button onClick={() => setShowEulaModal(false)}>Cancel</button>
+                <button className="btn-start" disabled={serverActionBusy} onClick={() => acceptEulaAndStart().catch((e) => setMessage(e.message))}>
+                  {serverActionBusy ? "Starting..." : "Accept EULA and Start"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {showAddServerModal && (
           <div className="modal-backdrop" onClick={() => setShowAddServerModal(false)}>
@@ -1282,7 +1789,7 @@ export default function App() {
 
         {showConfigEditor && configEditor && <div className="modal-backdrop" onClick={() => closeConfigEditor()}><div className="modal-card config-editor-modal" onClick={(e) => e.stopPropagation()}><h3>Config Editor</h3><div className="muted">{configEditor.path}</div><div className="config-editor-monaco"><Editor height="55dvh" language={configLanguage(configEditor.path)} theme="vs-dark" value={configEditor.content} onChange={(value) => setConfigEditor({ ...configEditor, content: value ?? "" })} options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: "on", automaticLayout: true }} /></div>{!!configEditorError && <div className="banner warn">{configEditorError}</div>}<div className="row"><button onClick={() => closeConfigEditor()}>Cancel</button><button className="btn-start" onClick={() => saveConfigEditor().catch((e) => setConfigEditorError(e.message))}>Save</button></div></div></div>}
 
-        {currentUser?.mustChangePassword && <div className="modal-backdrop" onClick={(e) => e.stopPropagation()}><div className="modal-card" onClick={(e) => e.stopPropagation()}><h3>Set New Password</h3><p>You logged in with a temporary password. Set a new password to continue.</p><input type="password" value={forcePassword} onChange={(e) => setForcePassword(e.target.value)} placeholder="New password" /><input type="password" value={forcePasswordConfirm} onChange={(e) => setForcePasswordConfirm(e.target.value)} placeholder="Confirm password" />{!!forcePasswordError && <div className="banner warn">{forcePasswordError}</div>}<div className="row"><button className="btn-start" onClick={() => setForcedPasswordNow().catch((e) => setForcePasswordError(e.message))}>Set</button></div></div></div>}
+        {currentUser?.mustChangePassword && <div className="modal-backdrop" onClick={(e) => e.stopPropagation()}><div className="modal-card" onClick={(e) => e.stopPropagation()}><h3>Set New Password</h3><p>You logged in with a temporary password. Set a new password to continue.</p><div className="password-input-wrap"><input type={showForcePassword ? "text" : "password"} value={forcePassword} onChange={(e) => setForcePassword(e.target.value)} placeholder="New password" /><button type="button" className="password-toggle-btn" onClick={() => setShowForcePassword((prev) => !prev)}>{showForcePassword ? "Hide" : "Show"}</button></div><div className="password-input-wrap"><input type={showForcePasswordConfirm ? "text" : "password"} value={forcePasswordConfirm} onChange={(e) => setForcePasswordConfirm(e.target.value)} placeholder="Confirm password" /><button type="button" className="password-toggle-btn" onClick={() => setShowForcePasswordConfirm((prev) => !prev)}>{showForcePasswordConfirm ? "Hide" : "Show"}</button></div>{!!forcePasswordError && <div className="banner warn">{forcePasswordError}</div>}<div className="row"><button className="btn-start" onClick={() => setForcedPasswordNow().catch((e) => setForcePasswordError(e.message))}>Set</button></div></div></div>}
 
         {showAddUserModal && (
           <div className="modal-backdrop" onClick={() => setShowAddUserModal(false)}>

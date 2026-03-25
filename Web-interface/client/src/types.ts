@@ -26,6 +26,43 @@ export type ServerSettings = {
   playitCommand: string;
 };
 
+export type PlayerRecord = {
+  uuid: string;
+  name: string;
+  whitelisted: boolean;
+  operator: boolean;
+  opLevel: number | null;
+  bypassesPlayerLimit: boolean;
+  headUrl: string;
+};
+
+export type EulaState = {
+  accepted: boolean;
+  path: string;
+  link: string;
+  mtime: string | null;
+};
+
+export type ServerPropertyField = {
+  key: string;
+  value: string;
+  control: "boolean" | "number" | "select" | "text";
+  category: "access" | "world" | "gameplay" | "network" | "performance" | "advanced";
+  label: string;
+  options?: string[];
+  isCustom?: boolean;
+};
+
+export type ServerPropertiesState = {
+  path: string;
+  mtime: string | null;
+  fields: ServerPropertyField[];
+};
+
+export type StartServerResult =
+  | { kind: "started"; status: ServerStatus }
+  | { kind: "eula_required"; eula: EulaState };
+
 export type FileEntry = {
   name: string;
   path: string;
@@ -56,6 +93,11 @@ export type ServerProfile = {
   rootPath: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ServerAddonSummary = {
+  mode: "plugins" | "mods" | "none";
+  items: string[];
 };
 
 export type ServerTypeOption = {
