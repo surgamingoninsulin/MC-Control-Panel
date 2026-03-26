@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import AdmZip from "adm-zip";
+import { load as parseYaml } from "js-yaml";
 import { resolveSafePath, toRelativePath } from "../utils/pathUtils.js";
 
 type InstallResult = {
@@ -16,12 +17,12 @@ export class PluginService {
   }
 
   async list(serverRoot?: string): Promise<
-    Array<{ pluginId: string; jarPath?: string; folderPath?: string }>
+    Array<{ pluginId: string; name?: string; version?: string; jarPath?: string; folderPath?: string }>
   > {
     const dir = this.pluginsDirAbs(serverRoot);
     await fs.mkdir(dir, { recursive: true });
     const entries = await fs.readdir(dir, { withFileTypes: true });
-    const list: Array<{ pluginId: string; jarPath?: string; folderPath?: string }> = [];
+    const list: Array<{ pluginId: string; name?: string; version?: string; jarPath?: string; folderPath?: string }> = [];
 
     for (const entry of entries) {
       const name = entry.name;
@@ -29,9 +30,13 @@ export class PluginService {
       if (entry.isFile() && name.toLowerCase().endsWith(".jar")) {
         const pluginId = name.replace(/\.jar$/i, "");
         if (pluginId.startsWith(".")) continue;
+        const absPath = path.join(dir, name);
+        const meta = await this.readPluginMeta(absPath, pluginId);
         list.push({
           pluginId,
-          jarPath: toRelativePath(path.join(dir, name), serverRoot)
+          name: meta.name,
+          version: meta.version,
+          jarPath: toRelativePath(absPath, serverRoot)
         });
       }
     }
@@ -115,5 +120,27 @@ export class PluginService {
     }
 
     return { changed, restartRequired: true };
+  }
+
+  private async readPluginMeta(
+    jarPath: string,
+    fallbackId: string
+  ): Promise<{ name: string; version: string }> {
+    try {
+      const zip = new AdmZip(jarPath);
+      const entry =
+        zip.getEntry("plugin.yml") ||
+        zip
+          .getEntries()
+          .find((item) => !item.isDirectory && item.entryName.toLowerCase().endsWith("/plugin.yml"));
+      if (!entry) return { name: fallbackId, version: "-" };
+      const raw = entry.getData().toString("utf8");
+      const parsed = parseYaml(raw) as Record<string, unknown> | null;
+      const name = String(parsed?.name || fallbackId).trim() || fallbackId;
+      const version = String(parsed?.version || "-").trim() || "-";
+      return { name, version };
+    } catch {
+      return { name: fallbackId, version: "-" };
+    }
   }
 }

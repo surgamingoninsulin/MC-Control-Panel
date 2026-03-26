@@ -8,6 +8,7 @@ import type {
   ServerPropertiesState,
   StartServerResult,
   ServerInstallType,
+  ServerIconEntry,
   ServerProfile,
   ServerSettings,
   ServerStatus,
@@ -17,6 +18,7 @@ import type {
 
 const jsonHeaders = { "Content-Type": "application/json" };
 let activeServerId = "";
+type UploadInput = File | { file: File; relativePath?: string };
 
 const withServerHeaders = (headers?: HeadersInit): HeadersInit => {
   if (!activeServerId) return headers || {};
@@ -50,7 +52,7 @@ export const api = {
   authMe: () => request<{ user: UserRecord }>("/api/auth/me"),
   authState: () => request<{ needsBootstrap: boolean }>("/api/auth/state"),
   authBootstrap: (username: string, password: string, email = "") =>
-    request<{ user: UserRecord }>("/api/auth/bootstrap", {
+    request<{ user: UserRecord; recoveryKeys: string[] }>("/api/auth/bootstrap", {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ username, password, email })
@@ -68,6 +70,14 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify({ identity })
     }),
+  authRecoveryLogin: (email: string, recoveryKey: string) =>
+    request<{ user: UserRecord; remainingKeys: number; shouldRegenerate: boolean }>("/api/auth/recovery-login", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ email, recoveryKey })
+    }),
+  authRegenerateRecoveryKeys: () =>
+    request<{ user: UserRecord; recoveryKeys: string[] }>("/api/auth/recovery-keys/regenerate", { method: "POST" }),
   authSetPassword: (password: string) =>
     request<{ user: UserRecord }>("/api/auth/set-password", {
       method: "POST",
@@ -90,6 +100,10 @@ export const api = {
     }),
   deleteUser: (id: string) =>
     request<{ ok: true }>(`/api/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  regenerateUserRecoveryKeys: (id: string) =>
+    request<{ user: UserRecord; recoveryKeys: string[] }>(`/api/users/${encodeURIComponent(id)}/recovery-keys/regenerate`, {
+      method: "POST"
+    }),
 
   listServers: () => request<{ servers: ServerProfile[] }>("/api/servers"),
   deleteServer: (id: string) =>
@@ -105,11 +119,18 @@ export const api = {
       `/api/servers/${encodeURIComponent(id)}/update`,
       { method: "POST" }
     ),
-  installServer: async (payload: { name: string; type: ServerInstallType; version: string; icon?: File | null }) => {
+  installServer: async (payload: {
+    name: string;
+    type: ServerInstallType;
+    version: string;
+    icon?: File | null;
+    iconDatabaseFile?: string;
+  }) => {
     const form = new FormData();
     form.append("name", payload.name);
     form.append("type", payload.type);
     form.append("version", payload.version);
+    if (payload.iconDatabaseFile) form.append("iconDatabaseFile", payload.iconDatabaseFile);
     if (payload.icon) form.append("icon", payload.icon, payload.icon.name);
     const res = await fetch("/api/servers/install", {
       method: "POST",
@@ -118,9 +139,10 @@ export const api = {
     if (!res.ok) throw new Error((await res.json()).error || "Server install failed");
     return res.json() as Promise<{ server: ServerProfile; install: { jarPath: string } }>;
   },
-  importServer: async (payload: { name: string; files: File[] }) => {
+  importServer: async (payload: { name: string; files: File[]; iconDatabaseFile?: string }) => {
     const form = new FormData();
     form.append("name", payload.name);
+    if (payload.iconDatabaseFile) form.append("iconDatabaseFile", payload.iconDatabaseFile);
     for (const file of payload.files) {
       const relative = "webkitRelativePath" in file ? String(file.webkitRelativePath || "").trim() : "";
       form.append("files[]", file, relative || file.name);
@@ -129,6 +151,16 @@ export const api = {
     if (!res.ok) throw new Error((await res.json()).error || "Server import failed");
     return res.json() as Promise<{ server: ServerProfile; saved: string[] }>;
   },
+  listServerIcons: () => request<{ icons: ServerIconEntry[] }>("/api/servers/icon-library/list"),
+  uploadServerIcon: async (file: File) => {
+    const form = new FormData();
+    form.append("icon", file, file.name);
+    const res = await fetch("/api/servers/icon-library/upload", { method: "POST", body: form });
+    if (!res.ok) throw new Error((await res.json()).error || "Icon upload failed");
+    return res.json() as Promise<{ icon: ServerIconEntry }>;
+  },
+  deleteServerIcon: (file: string) =>
+    request<{ ok: true }>(`/api/servers/icon-library/file/${encodeURIComponent(file)}`, { method: "DELETE" }),
   getServerTypes: () => request<{ types: ServerTypeOption[] }>("/api/server-types"),
   getServerAddonSummary: (id: string) =>
     request<{ summary: ServerAddonSummary }>(`/api/servers/${encodeURIComponent(id)}/addons-summary`),
@@ -237,10 +269,14 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify({ paths })
     }),
-  uploadFiles: async (targetPath: string, files: File[]) => {
+  uploadFiles: async (targetPath: string, files: UploadInput[]) => {
     const form = new FormData();
     form.append("targetPath", targetPath);
-    for (const file of files) form.append("files[]", file);
+    for (const item of files) {
+      const file = item instanceof File ? item : item.file;
+      const relativePath = item instanceof File ? "" : String(item.relativePath || "").trim();
+      form.append("files[]", file, relativePath || file.name);
+    }
     const res = await fetch("/api/files/upload", {
       method: "POST",
       body: form,

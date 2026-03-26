@@ -311,8 +311,11 @@ textarea:focus {
 .server-info-popover {
   position: absolute;
   top: calc(100% + 8px);
-  right: 0;
-  width: 240px;
+  left: 0;
+  right: auto;
+  width: max-content;
+  min-width: 240px;
+  max-width: 75vw;
   padding: 10px 12px;
   border-radius: 12px;
   border: 1px solid #35526d;
@@ -347,6 +350,36 @@ textarea:focus {
 .server-info-popover li {
   color: #d8ebfb;
   word-break: break-word;
+}
+
+.addon-summary-table-wrap {
+  max-height: none;
+  overflow: visible;
+}
+
+.addon-summary-table {
+  width: auto;
+  border-collapse: collapse;
+}
+
+.addon-summary-table th,
+.addon-summary-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #26435b;
+  font-size: 0.8rem;
+}
+
+.addon-summary-table thead th {
+  color: #bfd3e5;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+}
+
+.addon-summary-table td:first-child,
+.addon-summary-table th:first-child {
+  white-space: nowrap;
 }
 
 .server-update-btn {
@@ -1169,11 +1202,29 @@ textarea:focus {
   padding: 14px;
   display: grid;
   gap: 12px;
+  position: relative;
 }
 
 .modal-card h3 {
   margin: 0;
   font-size: 1.05rem;
+}
+
+.modal-close-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border-radius: 999px;
+  border: 1px solid #4a6279;
+  background: #13202d;
+  color: #d9ecff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 
 .menu-drawer-backdrop {
@@ -1248,6 +1299,81 @@ textarea:focus {
 
 .setup-modal {
   width: min(560px, calc(100vw - 32px));
+}
+
+.icon-picker-modal {
+  width: min(760px, calc(100vw - 32px));
+}
+
+.icon-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+  max-height: min(48dvh, 420px);
+  overflow: auto;
+  padding: 4px;
+}
+
+.icon-picker-item {
+  border: 1px solid #2f4960;
+  background: #0f1722;
+  border-radius: 10px;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  position: relative;
+  cursor: pointer;
+}
+
+.icon-picker-item img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #0a121d;
+}
+
+.icon-picker-item span {
+  font-size: 0.75rem;
+  color: #bfd1e2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-picker-item.active {
+  border-color: #46b7ff;
+  box-shadow: 0 0 0 2px rgba(70, 183, 255, 0.25);
+}
+
+.icon-picker-delete-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid #7b4b3e;
+  background: #2b1b1a;
+  color: #ffd2c8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  padding: 0;
+}
+
+.icon-picker-item:hover .icon-picker-delete-btn,
+.icon-picker-item:focus-within .icon-picker-delete-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.icon-picker-actions {
+  justify-content: space-between;
 }
 
 .jar-options {
@@ -1685,6 +1811,27 @@ textarea:focus {
 
 .users-table td .row {
   gap: 6px;
+}
+
+.addons-table-wrap {
+  min-height: 180px;
+}
+
+.addons-table {
+  min-width: 640px;
+}
+
+.addons-table th:first-child,
+.addons-table td:first-child {
+  width: 36px;
+}
+
+.addons-table .selected-row {
+  background: rgba(71, 184, 255, 0.14);
+}
+
+.addons-table tbody tr {
+  cursor: pointer;
 }
 
 .config-editor-modal {

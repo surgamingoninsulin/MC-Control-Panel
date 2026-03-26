@@ -9,6 +9,7 @@ export const createFileRoutes = (ctx: AppContext): Router => {
   const router = Router();
   const upload = multer({
     storage: multer.memoryStorage(),
+    preservePath: true,
     limits: { fileSize: appConfig.uploadLimitMb * 1024 * 1024 }
   });
 

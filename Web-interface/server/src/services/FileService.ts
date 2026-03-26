@@ -103,8 +103,15 @@ export class FileService {
     const saved: string[] = [];
 
     for (const file of files) {
-      rejectBlockedExtension(file.originalname);
-      const absOut = path.join(absTarget, path.basename(file.originalname));
+      const normalized = String(file.originalname || "")
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "")
+        .replace(/\/+$/, "")
+        .trim();
+      const relativeName = normalized || path.basename(String(file.originalname || "upload.bin"));
+      rejectBlockedExtension(relativeName);
+      const absOut = resolveSafePath(path.join(targetPath, relativeName), serverRoot);
+      await fs.mkdir(path.dirname(absOut), { recursive: true });
       await fs.writeFile(absOut, file.buffer);
       saved.push(toRelativePath(absOut, serverRoot));
     }

@@ -20,10 +20,10 @@ export const createAuthRoutes = (ctx: AppContext): Router => {
       const username = String(req.body?.username || "");
       const password = String(req.body?.password || "");
       const email = String(req.body?.email || "");
-      const user = ctx.auth.ensureOwnerBootstrap(username, password, email);
+      const out = ctx.auth.bootstrapOwnerWithRecovery(username, password, email);
       const login = ctx.auth.login(email, password);
       res.setHeader("Set-Cookie", `${COOKIE_NAME}=${encodeURIComponent(login.sessionId)}; Path=/; HttpOnly; SameSite=Lax`);
-      return res.json({ user });
+      return res.json({ user: out.user, recoveryKeys: out.recoveryKeys });
     } catch (error) {
       return res.status(400).json({ error: (error as Error).message });
     }
@@ -41,6 +41,22 @@ export const createAuthRoutes = (ctx: AppContext): Router => {
     }
   });
 
+  router.post("/recovery-login", (req, res) => {
+    try {
+      const email = String(req.body?.email || req.body?.identity || "");
+      const recoveryKey = String(req.body?.recoveryKey || req.body?.passkey || "");
+      const out = ctx.auth.loginWithRecoveryKey(email, recoveryKey);
+      res.setHeader("Set-Cookie", `${COOKIE_NAME}=${encodeURIComponent(out.sessionId)}; Path=/; HttpOnly; SameSite=Lax`);
+      return res.json({
+        user: out.user,
+        remainingKeys: out.remainingKeys,
+        shouldRegenerate: out.shouldRegenerate
+      });
+    } catch (error) {
+      return res.status(401).json({ error: (error as Error).message });
+    }
+  });
+
   router.post("/logout", (req, res) => {
     const sid = readSessionId(req);
     ctx.auth.logout(sid);
@@ -49,13 +65,7 @@ export const createAuthRoutes = (ctx: AppContext): Router => {
   });
 
   router.post("/request-password-reset", async (req, res) => {
-    try {
-      const identity = String(req.body?.identity || "");
-      const out = await ctx.auth.requestPasswordReset(identity);
-      return res.json({ ok: true, sent: out.sent, reason: out.reason || "sent" });
-    } catch (error) {
-      return res.status(400).json({ error: (error as Error).message });
-    }
+    return res.status(400).json({ error: "Email password reset is disabled. Use your recovery key." });
   });
 
   router.get("/reset-password/activate", (req, res) => {
@@ -89,6 +99,17 @@ export const createAuthRoutes = (ctx: AppContext): Router => {
       if (!user) return res.status(401).json({ error: "Authentication required." });
       const updated = ctx.auth.setPasswordByUserId(user.id, password);
       return res.json({ user: updated });
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  router.post("/recovery-keys/regenerate", requireAuth, (req, res) => {
+    try {
+      const user = (req as AuthedRequest).user;
+      if (!user) return res.status(401).json({ error: "Authentication required." });
+      const out = ctx.auth.regenerateRecoveryKeysByUserId(user.id);
+      return res.json({ user: out.user, recoveryKeys: out.recoveryKeys });
     } catch (error) {
       return res.status(400).json({ error: (error as Error).message });
     }

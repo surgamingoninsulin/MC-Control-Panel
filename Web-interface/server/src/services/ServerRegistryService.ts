@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { appConfig } from "../config.js";
 
 export type ServerType = "vanilla" | "paper" | "spigot" | "purpur" | "forge" | "neoforge" | "fabric";
@@ -20,6 +21,8 @@ type RegistryData = {
 };
 
 const EMPTY_REGISTRY: RegistryData = { servers: [] };
+const ICON_FILE_RE = /^[A-Za-z0-9]+\.png$/;
+const DEFAULT_ICON_FILE = "_31278649105.png";
 
 const nowIso = (): string => new Date().toISOString();
 const normalizeNameKey = (value: string): string => value.trim().toLowerCase();
@@ -28,12 +31,17 @@ const PLUGIN_SERVER_TYPES = new Set<ServerType>(["paper", "spigot", "purpur"]);
 
 export class ServerRegistryService {
   private readonly filePath: string;
+  private readonly iconDatabaseDir: string;
+  private readonly iconDatabaseBackupDir: string;
   private data: RegistryData = EMPTY_REGISTRY;
 
   constructor() {
     fs.mkdirSync(appConfig.panelDataDir, { recursive: true });
     fs.mkdirSync(appConfig.serversRoot, { recursive: true });
     this.filePath = path.resolve(appConfig.panelDataDir, "servers.json");
+    this.iconDatabaseDir = this.resolveIconDatabaseDir();
+    this.iconDatabaseBackupDir = path.resolve(appConfig.panelDataDir, "server-icons-database");
+    this.ensureIconDatabaseIntegrity();
     this.data = this.load();
     let changed = false;
     for (const server of this.data.servers) {
@@ -141,6 +149,68 @@ export class ServerRegistryService {
     fs.writeFileSync(out, iconBuffer);
   }
 
+  listIconDatabase(): Array<{ file: string; isDefault: boolean }> {
+    const dir = this.iconDatabaseDir;
+    if (!fs.existsSync(dir)) return [];
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const files = entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .filter((name) => name.toLowerCase().endsWith(".png"));
+    const sorted = files.sort((a, b) => a.localeCompare(b));
+    return sorted.map((file) => ({ file, isDefault: file === DEFAULT_ICON_FILE }));
+  }
+
+  getIconFromDatabase(file: string): string {
+    const normalized = String(file || "").trim();
+    if (!normalized) throw new Error("Icon file is required.");
+    const resolved = path.resolve(this.iconDatabaseDir, normalized);
+    const dbRoot = path.resolve(this.iconDatabaseDir);
+    if (!(resolved === dbRoot || resolved.startsWith(`${dbRoot}${path.sep}`))) {
+      throw new Error("Invalid icon path.");
+    }
+    if (!fs.existsSync(resolved)) throw new Error("Icon not found.");
+    return resolved;
+  }
+
+  saveIconToDatabase(iconBuffer: Buffer): string {
+    fs.mkdirSync(this.iconDatabaseDir, { recursive: true });
+    fs.mkdirSync(this.iconDatabaseBackupDir, { recursive: true });
+    let fileName = this.generateUniqueIconFileName();
+    let iconPath = path.resolve(this.iconDatabaseDir, fileName);
+    while (fs.existsSync(iconPath)) {
+      fileName = this.generateUniqueIconFileName();
+      iconPath = path.resolve(this.iconDatabaseDir, fileName);
+    }
+    fs.writeFileSync(iconPath, iconBuffer);
+    const backupPath = path.resolve(this.iconDatabaseBackupDir, fileName);
+    fs.writeFileSync(backupPath, iconBuffer);
+    return fileName;
+  }
+
+  setServerIconFromDatabase(id: string, file: string): void {
+    const iconPath = this.getIconFromDatabase(file);
+    const buffer = fs.readFileSync(iconPath);
+    this.setServerIcon(id, buffer);
+  }
+
+  deleteIconFromDatabase(file: string): void {
+    const normalized = String(file || "").trim();
+    if (!normalized) throw new Error("Icon file is required.");
+    if (normalized === DEFAULT_ICON_FILE) {
+      throw new Error("Default icon cannot be deleted.");
+    }
+    const mainPath = path.resolve(this.iconDatabaseDir, normalized);
+    const backupPath = path.resolve(this.iconDatabaseBackupDir, normalized);
+    const mainRoot = path.resolve(this.iconDatabaseDir);
+    const backupRoot = path.resolve(this.iconDatabaseBackupDir);
+    const inMain = mainPath === mainRoot || mainPath.startsWith(`${mainRoot}${path.sep}`);
+    const inBackup = backupPath === backupRoot || backupPath.startsWith(`${backupRoot}${path.sep}`);
+    if (!inMain || !inBackup) throw new Error("Invalid icon path.");
+    if (fs.existsSync(mainPath)) fs.rmSync(mainPath, { force: true });
+    if (fs.existsSync(backupPath)) fs.rmSync(backupPath, { force: true });
+  }
+
   getServerIconPath(id: string): string {
     const server = this.requireById(id);
     const iconPath = path.resolve(server.rootPath, "server-icon.png");
@@ -207,11 +277,65 @@ export class ServerRegistryService {
   }
 
   private resolveDefaultServerIconPath(): string | null {
-    const fromDist = path.resolve(process.cwd(), "../client/dist/server-icon.png");
-    if (fs.existsSync(fromDist)) return fromDist;
-    const fromPublic = path.resolve(process.cwd(), "../client/public/server-icon.png");
-    if (fs.existsSync(fromPublic)) return fromPublic;
+    const fromDbDist = path.resolve(this.iconDatabaseDir, DEFAULT_ICON_FILE);
+    if (fs.existsSync(fromDbDist)) return fromDbDist;
     return null;
+  }
+
+  private ensureIconDatabaseIntegrity(): void {
+    fs.mkdirSync(this.iconDatabaseDir, { recursive: true });
+    fs.mkdirSync(this.iconDatabaseBackupDir, { recursive: true });
+    this.migrateLegacyDefaultIcon();
+    this.copyMissingIcons(this.iconDatabaseBackupDir, this.iconDatabaseDir);
+    this.copyMissingIcons(this.iconDatabaseDir, this.iconDatabaseBackupDir);
+  }
+
+  private migrateLegacyDefaultIcon(): void {
+    const distLegacy = path.resolve(process.cwd(), "../client/dist/server-icon.png");
+    const defaultPath = path.resolve(this.iconDatabaseDir, DEFAULT_ICON_FILE);
+    const backupDefaultPath = path.resolve(this.iconDatabaseBackupDir, DEFAULT_ICON_FILE);
+    if (!fs.existsSync(defaultPath) && fs.existsSync(backupDefaultPath)) {
+      fs.copyFileSync(backupDefaultPath, defaultPath);
+    }
+    if (!fs.existsSync(defaultPath)) {
+      if (fs.existsSync(distLegacy)) {
+        fs.copyFileSync(distLegacy, defaultPath);
+      }
+    }
+    if (fs.existsSync(defaultPath) && !fs.existsSync(backupDefaultPath)) {
+      fs.copyFileSync(defaultPath, backupDefaultPath);
+    }
+    if (fs.existsSync(distLegacy)) fs.rmSync(distLegacy, { force: true });
+  }
+
+  private copyMissingIcons(fromDir: string, toDir: string): void {
+    if (!fs.existsSync(fromDir)) return;
+    fs.mkdirSync(toDir, { recursive: true });
+    const entries = fs.readdirSync(fromDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const file = entry.name;
+      if (!file.toLowerCase().endsWith(".png")) continue;
+      if (file !== DEFAULT_ICON_FILE && !ICON_FILE_RE.test(file)) continue;
+      const fromPath = path.resolve(fromDir, file);
+      const toPath = path.resolve(toDir, file);
+      if (!fs.existsSync(toPath)) {
+        fs.copyFileSync(fromPath, toPath);
+      }
+    }
+  }
+
+  private resolveIconDatabaseDir(): string {
+    const fromPanelData = path.resolve(appConfig.panelDataDir, "../../client/dist/server-icons database");
+    const fromCwd = path.resolve(process.cwd(), "../client/dist/server-icons database");
+    if (fs.existsSync(fromPanelData)) return fromPanelData;
+    if (fs.existsSync(fromCwd)) return fromCwd;
+    return fromPanelData;
+  }
+
+  private generateUniqueIconFileName(): string {
+    const random = crypto.randomBytes(9).toString("base64url");
+    return `${random}.png`;
   }
 
   private removeServerRoot(rootPath: string): void {

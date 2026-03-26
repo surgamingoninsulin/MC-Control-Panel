@@ -3,6 +3,10 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // Keep custom user-managed icon assets in dist/server-icons database across builds.
+    emptyOutDir: false
+  },
   server: {
     port: 5173,
     host: "127.0.0.1",

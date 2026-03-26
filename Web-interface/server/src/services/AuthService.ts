@@ -21,11 +21,14 @@ export type UserRecord = {
   devPasswordExpiresAt: string | null;
   resetTokenHash: string | null;
   resetTokenExpiresAt: string | null;
+  recoveryKeys: Array<{ hash: string; createdAt: string; usedAt: string | null }>;
   createdAt: string;
   updatedAt: string;
 };
 
-type SafeUser = Omit<UserRecord, "passwordHash" | "resetTokenHash">;
+type SafeUser = Omit<UserRecord, "passwordHash" | "resetTokenHash" | "recoveryKeys"> & {
+  recoveryKeysRemaining: number;
+};
 
 export type SessionRecord = {
   id: string;
@@ -40,6 +43,8 @@ const SESSION_MS = 1000 * 60 * 60 * 24 * 7;
 const TEMP_PASSWORD_MS = 1000 * 60 * 60;
 const DEV_PASSWORD_MS = 1000 * 30;
 const RESET_REISSUE_GUARD_MS = 1000 * 45;
+const RECOVERY_KEY_COUNT = 10;
+const RECOVERY_REGENERATE_THRESHOLD = 1;
 
 const nowIso = (): string => new Date().toISOString();
 const normalize = (value: string): string => value.trim().toLowerCase();
@@ -69,6 +74,14 @@ const randomTempPassword = (): string => {
   return out;
 };
 
+const randomRecoveryKey = (): string => {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = crypto.randomBytes(14);
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 1) out += alphabet[bytes[i] % alphabet.length];
+  return out;
+};
+
 export class AuthService {
   private readonly filePath: string;
   private readonly resetMailLogPath: string;
@@ -82,8 +95,14 @@ export class AuthService {
     this.store = this.load();
   }
 
+  private toSafeUser(user: UserRecord): SafeUser {
+    const { passwordHash: _omit, resetTokenHash: _omit2, recoveryKeys: _omit3, ...safe } = user;
+    const recoveryKeysRemaining = (user.recoveryKeys || []).filter((item) => !item.usedAt).length;
+    return { ...safe, recoveryKeysRemaining };
+  }
+
   listUsers(): SafeUser[] {
-    return this.store.users.map(({ passwordHash: _omit, resetTokenHash: _omit2, ...safe }) => safe);
+    return this.store.users.map((entry) => this.toSafeUser(entry));
   }
 
   hasUsers(): boolean {
@@ -100,8 +119,7 @@ export class AuthService {
     }
     const user = this.store.users.find((entry) => entry.id === session.userId && entry.active);
     if (!user) return null;
-    const { passwordHash: _omit, resetTokenHash: _omit2, ...safe } = user;
-    return safe;
+    return this.toSafeUser(user);
   }
 
   login(email: string, password: string): { sessionId: string; user: SafeUser } {
@@ -140,8 +158,7 @@ export class AuthService {
     const createdAt = nowIso();
     const expiresAt = new Date(Date.now() + SESSION_MS).toISOString();
     this.sessions.set(sessionId, { id: sessionId, userId: user.id, createdAt, expiresAt });
-    const { passwordHash: _omit, resetTokenHash: _omit2, ...safe } = user;
-    return { sessionId, user: safe };
+    return { sessionId, user: this.toSafeUser(user) };
   }
 
   logout(sessionId: string | undefined): void {
@@ -153,6 +170,12 @@ export class AuthService {
     if (this.store.users.length) throw new Error("Users already exist.");
     if (!isEmail(email)) throw new Error("Valid owner email is required.");
     return this.createUser({ username, password, role: "owner", email });
+  }
+
+  bootstrapOwnerWithRecovery(username: string, password: string, email = ""): { user: SafeUser; recoveryKeys: string[] } {
+    const user = this.ensureOwnerBootstrap(username, password, email);
+    const out = this.regenerateRecoveryKeysByUserId(user.id);
+    return { user: out.user, recoveryKeys: out.recoveryKeys };
   }
 
   createUser(input: { username: string; password: string; role: UserRole; email?: string }): SafeUser {
@@ -189,13 +212,13 @@ export class AuthService {
       devPasswordExpiresAt: null,
       resetTokenHash: null,
       resetTokenExpiresAt: null,
+      recoveryKeys: [],
       createdAt: ts,
       updatedAt: ts
     };
     this.store.users.push(record);
     this.persist();
-    const { passwordHash: _omit, resetTokenHash: _omit2, ...safe } = record;
-    return safe;
+    return this.toSafeUser(record);
   }
 
   updateUser(
@@ -241,8 +264,7 @@ export class AuthService {
     }
     user.updatedAt = nowIso();
     this.persist();
-    const { passwordHash: _omit, resetTokenHash: _omit2, ...safe } = user;
-    return safe;
+    return this.toSafeUser(user);
   }
 
   setPasswordByUserId(userId: string, password: string): SafeUser {
@@ -259,8 +281,59 @@ export class AuthService {
     user.resetTokenExpiresAt = null;
     user.updatedAt = nowIso();
     this.persist();
-    const { passwordHash: _omit, resetTokenHash: _omit2, ...safe } = user;
-    return safe;
+    return this.toSafeUser(user);
+  }
+
+  loginWithRecoveryKey(email: string, recoveryKey: string): {
+    sessionId: string;
+    user: SafeUser;
+    remainingKeys: number;
+    shouldRegenerate: boolean;
+  } {
+    const key = normalize(email);
+    const rawKey = String(recoveryKey || "").trim().toUpperCase();
+    if (!isEmail(key)) throw new Error("Use email address to log in.");
+    if (!rawKey) throw new Error("Recovery key is required.");
+    const user = this.store.users.find((entry) => entry.emailKey === key);
+    if (!user) throw new Error("Invalid email or recovery key.");
+    if (!user.active) throw new Error("Account is disabled.");
+    const hashed = hashToken(rawKey);
+    const target = (user.recoveryKeys || []).find((item) => item.hash === hashed && !item.usedAt);
+    if (!target) throw new Error("Invalid email or recovery key.");
+
+    target.usedAt = nowIso();
+    user.mustChangePassword = true;
+    user.tempPasswordExpiresAt = null;
+    user.tempPasswordIssuedAt = nowIso();
+    user.updatedAt = nowIso();
+    this.persist();
+
+    const sessionId = crypto.randomUUID();
+    const createdAt = nowIso();
+    const expiresAt = new Date(Date.now() + SESSION_MS).toISOString();
+    this.sessions.set(sessionId, { id: sessionId, userId: user.id, createdAt, expiresAt });
+    const remainingKeys = user.recoveryKeys.filter((item) => !item.usedAt).length;
+    return {
+      sessionId,
+      user: this.toSafeUser(user),
+      remainingKeys,
+      shouldRegenerate: remainingKeys <= RECOVERY_REGENERATE_THRESHOLD
+    };
+  }
+
+  regenerateRecoveryKeysByUserId(userId: string): { user: SafeUser; recoveryKeys: string[] } {
+    const user = this.store.users.find((entry) => entry.id === userId);
+    if (!user) throw new Error("User not found.");
+    const generatedAt = nowIso();
+    const recoveryKeys = Array.from({ length: RECOVERY_KEY_COUNT }, () => randomRecoveryKey());
+    user.recoveryKeys = recoveryKeys.map((value) => ({
+      hash: hashToken(value),
+      createdAt: generatedAt,
+      usedAt: null
+    }));
+    user.updatedAt = nowIso();
+    this.persist();
+    return { user: this.toSafeUser(user), recoveryKeys };
   }
 
   async requestPasswordReset(identity: string): Promise<{ delivered: boolean; sent: boolean; reason?: "sent" | "too-soon" | "smtp-missing" | "not-found" | "invalid-email" }> {
@@ -445,6 +518,15 @@ export class AuthService {
             devPasswordExpiresAt: user.devPasswordExpiresAt ? String(user.devPasswordExpiresAt) : null,
             resetTokenHash: user.resetTokenHash ? String(user.resetTokenHash) : null,
             resetTokenExpiresAt: user.resetTokenExpiresAt ? String(user.resetTokenExpiresAt) : null,
+            recoveryKeys: Array.isArray(user.recoveryKeys)
+              ? user.recoveryKeys
+                  .map((item) => ({
+                    hash: String(item?.hash || ""),
+                    createdAt: String(item?.createdAt || nowIso()),
+                    usedAt: item?.usedAt ? String(item.usedAt) : null
+                  }))
+                  .filter((item) => !!item.hash)
+              : [],
             createdAt: String(user.createdAt || nowIso()),
             updatedAt: String(user.updatedAt || nowIso())
           };

@@ -47,6 +47,12 @@ export const api = {
         headers: jsonHeaders,
         body: JSON.stringify({ identity })
     }),
+    authRecoveryLogin: (email, recoveryKey) => request("/api/auth/recovery-login", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ email, recoveryKey })
+    }),
+    authRegenerateRecoveryKeys: () => request("/api/auth/recovery-keys/regenerate", { method: "POST" }),
     authSetPassword: (password) => request("/api/auth/set-password", {
         method: "POST",
         headers: jsonHeaders,
@@ -64,6 +70,9 @@ export const api = {
         body: JSON.stringify(payload)
     }),
     deleteUser: (id) => request(`/api/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    regenerateUserRecoveryKeys: (id) => request(`/api/users/${encodeURIComponent(id)}/recovery-keys/regenerate`, {
+        method: "POST"
+    }),
     listServers: () => request("/api/servers"),
     deleteServer: (id) => request(`/api/servers/${encodeURIComponent(id)}`, { method: "DELETE" }),
     renameServer: (id, name) => request(`/api/servers/${encodeURIComponent(id)}/rename`, {
@@ -77,6 +86,8 @@ export const api = {
         form.append("name", payload.name);
         form.append("type", payload.type);
         form.append("version", payload.version);
+        if (payload.iconDatabaseFile)
+            form.append("iconDatabaseFile", payload.iconDatabaseFile);
         if (payload.icon)
             form.append("icon", payload.icon, payload.icon.name);
         const res = await fetch("/api/servers/install", {
@@ -90,6 +101,8 @@ export const api = {
     importServer: async (payload) => {
         const form = new FormData();
         form.append("name", payload.name);
+        if (payload.iconDatabaseFile)
+            form.append("iconDatabaseFile", payload.iconDatabaseFile);
         for (const file of payload.files) {
             const relative = "webkitRelativePath" in file ? String(file.webkitRelativePath || "").trim() : "";
             form.append("files[]", file, relative || file.name);
@@ -99,6 +112,16 @@ export const api = {
             throw new Error((await res.json()).error || "Server import failed");
         return res.json();
     },
+    listServerIcons: () => request("/api/servers/icon-library/list"),
+    uploadServerIcon: async (file) => {
+        const form = new FormData();
+        form.append("icon", file, file.name);
+        const res = await fetch("/api/servers/icon-library/upload", { method: "POST", body: form });
+        if (!res.ok)
+            throw new Error((await res.json()).error || "Icon upload failed");
+        return res.json();
+    },
+    deleteServerIcon: (file) => request(`/api/servers/icon-library/file/${encodeURIComponent(file)}`, { method: "DELETE" }),
     getServerTypes: () => request("/api/server-types"),
     getServerAddonSummary: (id) => request(`/api/servers/${encodeURIComponent(id)}/addons-summary`),
     getServerVersions: (type) => request(`/api/server-versions?type=${encodeURIComponent(type)}`),
@@ -176,8 +199,11 @@ export const api = {
     uploadFiles: async (targetPath, files) => {
         const form = new FormData();
         form.append("targetPath", targetPath);
-        for (const file of files)
-            form.append("files[]", file);
+        for (const item of files) {
+            const file = item instanceof File ? item : item.file;
+            const relativePath = item instanceof File ? "" : String(item.relativePath || "").trim();
+            form.append("files[]", file, relativePath || file.name);
+        }
         const res = await fetch("/api/files/upload", {
             method: "POST",
             body: form,

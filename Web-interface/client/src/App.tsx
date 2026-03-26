@@ -10,6 +10,7 @@ import type {
   PluginEntry,
   ServerAddonSummary,
   ServerInstallType,
+  ServerIconEntry,
   ServerProfile,
   ServerPropertiesState,
   ServerPropertyField,
@@ -21,7 +22,7 @@ import type {
 } from "./types";
 
 type View = "console" | "players" | "files" | "plugins" | "settings" | "users";
-type AddServerMode = "chooser" | "install" | "import";
+type AddServerMode = "install" | "import";
 type UiUserRole = "admin" | "viewer";
 
 type ConfigEditorState = { path: string; content: string; originalContent: string; mtime: string };
@@ -139,16 +140,6 @@ const configLanguage = (pathValue: string): string => {
   return "plaintext";
 };
 
-const isAuthRelatedMessage = (value: string): boolean => {
-  const lower = value.toLowerCase();
-  return (
-    lower.includes("authentication required") ||
-    lower.includes("401") ||
-    lower.includes("account is disabled") ||
-    lower.includes("invalid email or password")
-  );
-};
-
 const viewFromPath = (pathName: string): View => {
   const lower = String(pathName || "/").toLowerCase();
   if (lower === "/players") return "players";
@@ -168,12 +159,79 @@ const pathFromView = (view: View): string => {
   return "/console";
 };
 
+const ModalCloseButton = ({ onClick }: { onClick: () => void }) => (
+  <button type="button" className="modal-close-btn" aria-label="Close" onClick={onClick}>
+    <i className="fa-solid fa-xmark" aria-hidden="true" />
+  </button>
+);
+
+type UploadCandidate = { file: File; relativePath?: string };
+
+const normalizeRelPath = (value: string): string =>
+  String(value || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .trim();
+
+const readDirectoryEntries = async (reader: any): Promise<any[]> => {
+  const out: any[] = [];
+  while (true) {
+    const batch = await new Promise<any[]>((resolve) => {
+      reader.readEntries((items: any[]) => resolve(items || []), () => resolve([]));
+    });
+    if (!batch.length) break;
+    out.push(...batch);
+  }
+  return out;
+};
+
+const walkDroppedEntry = async (entry: any, parentPath = ""): Promise<UploadCandidate[]> => {
+  if (!entry) return [];
+  if (entry.isFile) {
+    return await new Promise<UploadCandidate[]>((resolve) => {
+      entry.file(
+        (file: File) => {
+          const rel = normalizeRelPath(parentPath ? `${parentPath}/${file.name}` : file.name);
+          resolve([{ file, relativePath: rel }]);
+        },
+        () => resolve([])
+      );
+    });
+  }
+  if (entry.isDirectory) {
+    const dirPath = normalizeRelPath(parentPath ? `${parentPath}/${entry.name}` : entry.name);
+    const reader = entry.createReader();
+    const children = await readDirectoryEntries(reader);
+    const nested = await Promise.all(children.map((child) => walkDroppedEntry(child, dirPath)));
+    return nested.flat();
+  }
+  return [];
+};
+
+const collectDroppedUploads = async (dt: DataTransfer): Promise<UploadCandidate[]> => {
+  const items = Array.from(dt.items || []);
+  const fromEntries: UploadCandidate[] = [];
+  for (const item of items) {
+    const getEntry = (item as any).webkitGetAsEntry?.bind(item as any);
+    const entry = getEntry ? getEntry() : null;
+    if (!entry) continue;
+    const chunk = await walkDroppedEntry(entry);
+    fromEntries.push(...chunk);
+  }
+  if (fromEntries.length) return fromEntries;
+
+  const files = Array.from(dt.files || []);
+  return files.map((file) => {
+    const rel = "webkitRelativePath" in file ? normalizeRelPath(String(file.webkitRelativePath || "")) : "";
+    return { file, relativePath: rel || file.name };
+  });
+};
+
 export default function App() {
   const [activeView, setActiveView] = useState<View>(() => viewFromPath(window.location.pathname));
   const [showMenuDrawer, setShowMenuDrawer] = useState(false);
   const [message, setMessage] = useState("");
-  const [showAuthErrorModal, setShowAuthErrorModal] = useState(false);
-  const [authErrorDetail, setAuthErrorDetail] = useState("");
   const [showInfoModal, setShowInfoModal] = useState(false);
   const [infoModalDetail, setInfoModalDetail] = useState("");
 
@@ -189,17 +247,26 @@ export default function App() {
   const [setupServerName, setSetupServerName] = useState("");
   const [setupServerType, setSetupServerType] = useState<ServerInstallType | "">("");
   const [setupVersion, setSetupVersion] = useState("");
+  const [setupRecoveryKeys, setSetupRecoveryKeys] = useState<string[]>([]);
 
   const [loginUsername, setLoginUsername] = useState(() => localStorage.getItem(STORAGE_KEY_LOGIN_EMAIL) || "");
   const [loginPassword, setLoginPassword] = useState(() => localStorage.getItem(STORAGE_KEY_LOGIN_PASSWORD) || "");
-  const [rememberEmail, setRememberEmail] = useState(() => localStorage.getItem(STORAGE_KEY_REMEMBER_EMAIL) === "1");
-  const [rememberPassword, setRememberPassword] = useState(() => localStorage.getItem(STORAGE_KEY_REMEMBER_PASSWORD) === "1");
-  const [rememberBoth, setRememberBoth] = useState(() => localStorage.getItem(STORAGE_KEY_REMEMBER_BOTH) === "1");
+  const [rememberEmail, setRememberEmail] = useState(
+    () => localStorage.getItem(STORAGE_KEY_REMEMBER_EMAIL) === "1" || localStorage.getItem(STORAGE_KEY_REMEMBER_BOTH) === "1"
+  );
+  const [rememberPassword, setRememberPassword] = useState(
+    () => localStorage.getItem(STORAGE_KEY_REMEMBER_PASSWORD) === "1" || localStorage.getItem(STORAGE_KEY_REMEMBER_BOTH) === "1"
+  );
   const [loginError, setLoginError] = useState("");
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotRecoveryKey, setForgotRecoveryKey] = useState("");
   const [forgotModalNotice, setForgotModalNotice] = useState("");
   const [forgotModalError, setForgotModalError] = useState("");
+  const [needsRecoveryKeyRegeneration, setNeedsRecoveryKeyRegeneration] = useState(false);
+  const [showRecoveryKeysModal, setShowRecoveryKeysModal] = useState(false);
+  const [recoveryKeysModalTitle, setRecoveryKeysModalTitle] = useState("Recovery Keys");
+  const [recoveryKeysModalKeys, setRecoveryKeysModalKeys] = useState<string[]>([]);
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [showSetupPassword, setShowSetupPassword] = useState(false);
 
@@ -230,7 +297,9 @@ export default function App() {
   const [serverAddonSummaries, setServerAddonSummaries] = useState<Record<string, ServerAddonSummary | undefined>>({});
   const [serverAddonLoadingId, setServerAddonLoadingId] = useState("");
   const [showAddServerModal, setShowAddServerModal] = useState(false);
-  const [addServerMode, setAddServerMode] = useState<AddServerMode>("chooser");
+  const [showServerAddonsModal, setShowServerAddonsModal] = useState(false);
+  const [serverAddonsModalServerId, setServerAddonsModalServerId] = useState("");
+  const [addServerMode, setAddServerMode] = useState<AddServerMode>("install");
 
   const [serverTypeOptions, setServerTypeOptions] = useState<ServerTypeOption[]>([]);
   const [setupVersionOptions, setSetupVersionOptions] = useState<string[]>([]);
@@ -238,7 +307,13 @@ export default function App() {
   const [installName, setInstallName] = useState("");
   const [installType, setInstallType] = useState<ServerInstallType | "">("");
   const [installVersion, setInstallVersion] = useState("");
-  const [installIconFile, setInstallIconFile] = useState<File | null>(null);
+  const [iconDatabaseEntries, setIconDatabaseEntries] = useState<ServerIconEntry[]>([]);
+  const [installIconFile, setInstallIconFile] = useState("");
+  const [importIconFile, setImportIconFile] = useState("");
+  const [iconPickerTarget, setIconPickerTarget] = useState<"install" | "import">("install");
+  const [showInstallIconModal, setShowInstallIconModal] = useState(false);
+  const [installIconModalSelectedFile, setInstallIconModalSelectedFile] = useState("");
+  const [installIconModalUpload, setInstallIconModalUpload] = useState<File | null>(null);
   const installIconRef = useRef<HTMLInputElement>(null);
   const [importName, setImportName] = useState("");
   const [importFiles, setImportFiles] = useState<File[]>([]);
@@ -291,7 +366,8 @@ export default function App() {
   const [showEulaModal, setShowEulaModal] = useState(false);
   const [revealedPropertyKeys, setRevealedPropertyKeys] = useState<Record<string, boolean>>({});
 
-  const canManageUsers = currentUser?.role === "owner";
+  const canManageUsers = currentUser?.role === "owner" || currentUser?.role === "admin";
+  const canEditUsers = currentUser?.role === "owner";
   const canOperateServer = currentUser?.role === "owner" || currentUser?.role === "admin";
   const activeServer = servers.find((s) => s.id === selectedServerId) || null;
   const serverPhase = status?.phase || (status?.running ? "online" : "offline");
@@ -390,6 +466,17 @@ export default function App() {
   };
 
   const loadTypes = async () => setServerTypeOptions((await api.getServerTypes()).types);
+  const loadServerIcons = async () => {
+    const out = await api.listServerIcons();
+    setIconDatabaseEntries(out.icons);
+    if (!installIconFile) {
+      const defaultIcon = out.icons.find((entry) => entry.isDefault);
+      if (defaultIcon) {
+        setInstallIconModalSelectedFile(defaultIcon.file);
+      }
+    }
+    return out.icons;
+  };
 
   const loadVersions = async (type: ServerInstallType | "", target: "setup" | "install") => {
     if (!type) {
@@ -420,7 +507,10 @@ export default function App() {
       if (selectedServerId) {
         setServerAddonSummaries((prev) => ({
           ...prev,
-          [selectedServerId]: { mode: "plugins", items: out.plugins.map((entry) => entry.pluginId) }
+          [selectedServerId]: {
+            mode: "plugins",
+            items: out.plugins.map((entry) => ({ name: entry.name || entry.pluginId, version: entry.version || "-" }))
+          }
         }));
       }
       setSelectedAddonKeys((prev) => prev.filter((id) => !id.startsWith("plugin:") || out.plugins.some((p) => `plugin:${p.pluginId}` === id)));
@@ -435,7 +525,7 @@ export default function App() {
       if (selectedServerId) {
         setServerAddonSummaries((prev) => ({
           ...prev,
-          [selectedServerId]: { mode: "mods", items: out.mods.map((entry) => entry.modId) }
+          [selectedServerId]: { mode: "mods", items: out.mods.map((entry) => ({ name: entry.modId, version: "-" })) }
         }));
       }
       setSelectedAddonKeys((prev) => prev.filter((id) => !id.startsWith("mod:") || out.mods.some((m) => `mod:${m.modId}` === id)));
@@ -599,14 +689,12 @@ export default function App() {
   }, [consoleLines, consoleAutoScroll, activeView]);
 
   useEffect(() => {
-    if (!message || !isAuthRelatedMessage(message)) return;
-    setAuthErrorDetail(message);
-    setShowAuthErrorModal(true);
-    setMessage("");
-  }, [message]);
-
-  useEffect(() => {
-    if (!message || isAuthRelatedMessage(message)) return;
+    if (!message) return;
+    const lower = message.toLowerCase();
+    if (lower.includes("authentication required") || lower.includes("401")) {
+      setMessage("");
+      return;
+    }
     setInfoModalDetail(message);
     setShowInfoModal(true);
     setMessage("");
@@ -627,10 +715,12 @@ export default function App() {
   }, [activeView, isAuthenticated, showSetupModal]);
 
   useEffect(() => {
-    if (showAddServerModal && importRef.current) {
+    if (!showAddServerModal) return;
+    if (addServerMode === "import" && importRef.current) {
       importRef.current.setAttribute("webkitdirectory", "");
       importRef.current.setAttribute("directory", "");
     }
+    loadServerIcons().catch((e) => setMessage(e.message));
   }, [showAddServerModal, addServerMode]);
 
   useEffect(() => { loadVersions(installType, "install").catch(() => void 0); }, [installType]);
@@ -652,16 +742,20 @@ export default function App() {
       e.preventDefault();
     };
     const handleDrop = async (e: DragEvent) => {
-      const files = Array.from(e.dataTransfer?.files || []);
+      const dataTransfer = e.dataTransfer;
       dragCounterRef.current = 0;
       setDragOverlayVisible(false);
-      if (!files.length || !(activeViewRef.current === "files" || activeViewRef.current === "plugins")) return;
+      if (!dataTransfer || !(activeViewRef.current === "files" || activeViewRef.current === "plugins")) return;
       e.preventDefault();
       try {
         if (activeViewRef.current === "files") {
-          await api.uploadFiles(filesPathRef.current, files);
+          const uploads = await collectDroppedUploads(dataTransfer);
+          if (!uploads.length) return;
+          await api.uploadFiles(filesPathRef.current, uploads);
           await loadFiles(filesPathRef.current);
         } else {
+          const files = Array.from(dataTransfer.files || []);
+          if (!files.length) return;
           if (!addonsEnabled) return;
           if (addonsMode === "plugins") {
             for (const file of files) await api.installPlugin(file, file.name.toLowerCase().endsWith(".zip") ? "zip" : "jar");
@@ -694,8 +788,8 @@ export default function App() {
     if (!email.includes("@")) return setLoginError("Use email address to log in.");
     try {
       await api.authLogin(email, loginPassword);
-      const shouldRememberEmail = rememberBoth || rememberEmail;
-      const shouldRememberPassword = rememberBoth || rememberPassword;
+      const shouldRememberEmail = rememberEmail;
+      const shouldRememberPassword = rememberPassword;
       if (shouldRememberEmail) {
         localStorage.setItem(STORAGE_KEY_LOGIN_EMAIL, email);
       } else {
@@ -708,11 +802,12 @@ export default function App() {
       }
       localStorage.setItem(STORAGE_KEY_REMEMBER_EMAIL, shouldRememberEmail ? "1" : "0");
       localStorage.setItem(STORAGE_KEY_REMEMBER_PASSWORD, shouldRememberPassword ? "1" : "0");
-      localStorage.setItem(STORAGE_KEY_REMEMBER_BOTH, rememberBoth ? "1" : "0");
+      localStorage.removeItem(STORAGE_KEY_REMEMBER_BOTH);
       await loadMe();
       await Promise.all([loadTypes(), loadServers()]);
       setActiveView(viewFromPath(window.location.pathname));
       setNeedsBootstrap(false);
+      setNeedsRecoveryKeyRegeneration(false);
     } catch (error) { setLoginError((error as Error).message); }
   };
 
@@ -720,18 +815,17 @@ export default function App() {
     setForgotModalNotice("");
     setForgotModalError("");
     const email = forgotEmail.trim();
+    const passkey = forgotRecoveryKey.trim();
     if (!email) return setForgotModalError("Enter email.");
+    if (!passkey) return setForgotModalError("Enter a recovery key.");
     try {
-      const out = await api.requestPasswordReset(email);
-      if (out.sent) {
-        setForgotModalNotice("If the email exists, the email is sent.");
-      } else if (out.reason === "too-soon") {
-        setForgotModalNotice("A temporary password was sent recently. Use the newest email and wait 45 seconds before requesting again.");
-      } else if (out.reason === "smtp-missing") {
-        setForgotModalNotice("If the email exists, reset data is generated, but SMTP is not configured to send mail.");
-      } else {
-        setForgotModalNotice("If the email exists, the email is sent.");
-      }
+      const out = await api.authRecoveryLogin(email, passkey);
+      setForgotModalNotice("Recovery key accepted. Set a new password now.");
+      setShowForgotModal(false);
+      setForgotEmail("");
+      setForgotRecoveryKey("");
+      setNeedsRecoveryKeyRegeneration(out.shouldRegenerate);
+      await loadMe();
     } catch (error) { setForgotModalError((error as Error).message); }
   };
 
@@ -744,34 +838,59 @@ export default function App() {
     if (setupStep === 3 && !setupServerType) return setSetupError("Choose server type.");
     if (setupStep === 4 && !setupVersion) return setSetupError("Choose version.");
     if (setupStep < 4) return setSetupStep((prev) => prev + 1);
-    try {
-      await api.authBootstrap(setupUsername.trim(), setupPassword, setupEmail.trim());
-      await api.installServer({ name: setupServerName.trim(), type: setupServerType as ServerInstallType, version: setupVersion });
+    if (setupStep === 4) {
+      try {
+        const bootstrap = await api.authBootstrap(setupUsername.trim(), setupPassword, setupEmail.trim());
+        await api.installServer({ name: setupServerName.trim(), type: setupServerType as ServerInstallType, version: setupVersion });
+        setSetupRecoveryKeys(bootstrap.recoveryKeys || []);
+        setSetupStep(5);
+      } catch (error) { setSetupError((error as Error).message); }
+      return;
+    }
+    if (setupStep === 5) {
       localStorage.setItem(STORAGE_KEY_SETUP, "1");
       setShowSetupModal(false);
       setNeedsBootstrap(false);
+      setSetupRecoveryKeys([]);
       await loadMe();
       await Promise.all([loadTypes(), loadServers()]);
-    } catch (error) { setSetupError((error as Error).message); }
+    }
   };
 
-  const doLogout = async () => { await api.authLogout(); setCurrentUser(null); setIsAuthenticated(false); setUsers([]); setUserRoleDraft({}); setShowSetupModal(false); };
+  const doLogout = async () => {
+    await api.authLogout();
+    const shouldKeepPassword = rememberPassword;
+    if (!shouldKeepPassword) {
+      setLoginPassword("");
+      localStorage.removeItem(STORAGE_KEY_LOGIN_PASSWORD);
+      localStorage.setItem(STORAGE_KEY_REMEMBER_PASSWORD, "0");
+    }
+    setCurrentUser(null);
+    setIsAuthenticated(false);
+    setUsers([]);
+    setUserRoleDraft({});
+    setShowSetupModal(false);
+    setNeedsRecoveryKeyRegeneration(false);
+  };
   const installServerNow = async () => {
     await api.installServer({
       name: installName.trim(),
       type: installType as ServerInstallType,
       version: installVersion,
-      icon: installIconFile
+      iconDatabaseFile: installIconFile
     });
-    setShowAddServerModal(false); setAddServerMode("chooser"); setInstallName(""); setInstallType(""); setInstallVersion(""); setInstallIconFile(null);
+    setShowAddServerModal(false); setInstallName(""); setInstallType(""); setInstallVersion(""); setInstallIconFile("");
+    setInstallIconModalSelectedFile(""); setInstallIconModalUpload(null);
     if (installIconRef.current) installIconRef.current.value = "";
     await loadServers();
   };
   const importServerNow = async () => {
     if (!importName.trim()) throw new Error("Server name is required.");
     if (!importFiles.length) throw new Error("Select a server root folder first.");
-    await api.importServer({ name: importName.trim(), files: importFiles });
-    setShowAddServerModal(false); setAddServerMode("chooser"); setImportName(""); setImportFiles([]);
+    await api.importServer({ name: importName.trim(), files: importFiles, iconDatabaseFile: importIconFile || undefined });
+    setShowAddServerModal(false); setImportName(""); setImportFiles([]); setImportIconFile("");
+    setInstallIconModalSelectedFile(""); setInstallIconModalUpload(null);
+    if (installIconRef.current) installIconRef.current.value = "";
     await loadServers();
   };
   const deleteServerNow = async () => { if (!serverToDelete) return; await api.deleteServer(serverToDelete.id); setShowDeleteModal(false); setServerToDelete(null); await loadServers(); };
@@ -806,9 +925,55 @@ export default function App() {
     setForcePasswordError("");
     if (!forcePassword) return setForcePasswordError("Enter a new password.");
     if (forcePassword !== forcePasswordConfirm) return setForcePasswordError("Passwords do not match.");
+    const nextPassword = forcePassword;
     await api.authSetPassword(forcePassword);
     setForcePassword(""); setForcePasswordConfirm("");
+    setLoginPassword(nextPassword);
+    if (rememberPassword) {
+      localStorage.setItem(STORAGE_KEY_LOGIN_PASSWORD, nextPassword);
+    }
     await loadMe();
+  };
+
+  const copyRecoveryKeys = async (keys: string[]) => {
+    const value = keys.join("\n");
+    try {
+      await navigator.clipboard.writeText(value);
+      setInfoModalDetail("Recovery keys copied to clipboard.");
+      setShowInfoModal(true);
+    } catch {
+      setInfoModalDetail("Copy failed. Please use Download.");
+      setShowInfoModal(true);
+    }
+  };
+
+  const downloadRecoveryKeys = (keys: string[]) => {
+    const blob = new Blob([keys.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const node = document.createElement("a");
+    node.href = url;
+    node.download = "mc-control-panel-recovery-keys.txt";
+    document.body.appendChild(node);
+    node.click();
+    node.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const regenerateRecoveryKeysNow = async () => {
+    const out = await api.authRegenerateRecoveryKeys();
+    setCurrentUser(out.user);
+    setRecoveryKeysModalTitle("New Recovery Keys");
+    setRecoveryKeysModalKeys(out.recoveryKeys || []);
+    setShowRecoveryKeysModal(true);
+    setNeedsRecoveryKeyRegeneration(false);
+  };
+
+  const regenerateRecoveryKeysForUser = async (userId: string, username: string) => {
+    const out = await api.regenerateUserRecoveryKeys(userId);
+    await refreshUsers();
+    setRecoveryKeysModalTitle(`New PassKeys (${username})`);
+    setRecoveryKeysModalKeys(out.recoveryKeys || []);
+    setShowRecoveryKeysModal(true);
   };
 
   const runServerAction = async (action: "start" | "stop" | "restart") => {
@@ -1040,10 +1205,63 @@ export default function App() {
     await loadPlayers();
   };
 
+  const openServerAddonsModal = async (server: ServerProfile) => {
+    setServerAddonsModalServerId(server.id);
+    setShowServerAddonsModal(true);
+    await loadServerAddonSummary(server);
+  };
+
+  const openIconModal = async (target: "install" | "import") => {
+    setIconPickerTarget(target);
+    const icons = await loadServerIcons();
+    setInstallIconModalUpload(null);
+    const selectedIcon = target === "install" ? installIconFile : importIconFile;
+    setInstallIconModalSelectedFile(selectedIcon || icons.find((entry) => entry.isDefault)?.file || "");
+    if (installIconRef.current) installIconRef.current.value = "";
+    setShowInstallIconModal(true);
+  };
+
+  const confirmIconSelection = async () => {
+    if (installIconModalUpload) {
+      const out = await api.uploadServerIcon(installIconModalUpload);
+      await loadServerIcons();
+      if (iconPickerTarget === "install") setInstallIconFile(out.icon.file);
+      else setImportIconFile(out.icon.file);
+      setShowInstallIconModal(false);
+      setInstallIconModalUpload(null);
+      setInstallIconModalSelectedFile(out.icon.file);
+      return;
+    }
+    if (iconPickerTarget === "install") setInstallIconFile(installIconModalSelectedFile);
+    else setImportIconFile(installIconModalSelectedFile);
+    setShowInstallIconModal(false);
+  };
+
+  const deleteInstallIconEntry = async (file: string) => {
+    await api.deleteServerIcon(file);
+    const out = await api.listServerIcons();
+    setIconDatabaseEntries(out.icons);
+    if (installIconModalSelectedFile === file) {
+      const fallback = out.icons.find((entry) => entry.isDefault)?.file || "";
+      setInstallIconModalSelectedFile(fallback);
+    }
+    if (installIconFile === file) {
+      setInstallIconFile("");
+    }
+    if (importIconFile === file) {
+      setImportIconFile("");
+    }
+  };
+
   const openServerModal = (mode: AddServerMode) => {
-    if (mode === "import") setImportFiles([]);
+    if (mode === "import") {
+      setImportFiles([]);
+      setImportIconFile("");
+    }
     if (mode === "install") {
-      setInstallIconFile(null);
+      setInstallIconFile("");
+      setInstallIconModalSelectedFile("");
+      setInstallIconModalUpload(null);
       if (installIconRef.current) installIconRef.current.value = "";
     }
     setAddServerMode(mode);
@@ -1071,20 +1289,21 @@ export default function App() {
           {showSetupModal ? (
             <div className="auth-panel setup-panel">
               <h2 className="auth-title">Sign Up</h2>
-              <p className="muted auth-subtitle">Initial Setup ({setupStep + 1}/5)</p>
+              <p className="muted auth-subtitle">Initial Setup ({setupStep + 1}/6)</p>
               {setupStep === 0 && <div className="auth-form-stack"><label>Username</label><input value={setupUsername} onChange={(e) => setSetupUsername(e.target.value)} placeholder="Set username" autoFocus /><label>Email</label><input type="email" value={setupEmail} onChange={(e) => setSetupEmail(e.target.value)} placeholder="Owner email" /></div>}
               {setupStep === 1 && <div className="auth-form-stack"><label>Password</label><div className="password-input-wrap"><input type={showSetupPassword ? "text" : "password"} value={setupPassword} onChange={(e) => setSetupPassword(e.target.value)} placeholder="Set password" autoFocus /><button type="button" className="password-toggle-btn" onClick={() => setShowSetupPassword((prev) => !prev)}>{showSetupPassword ? "Hide" : "Show"}</button></div></div>}
               {setupStep === 2 && <div className="auth-form-stack"><label>Server Name</label><input value={setupServerName} onChange={(e) => setSetupServerName(e.target.value)} placeholder="Set server name" autoFocus /></div>}
               {setupStep === 3 && <div className="auth-form-stack"><label>Server Type</label><div className="jar-options">{serverTypeOptions.map((t) => <button key={t.id} className={setupServerType === t.id ? "menu-btn active" : "menu-btn"} disabled={!t.enabled} title={t.enabled ? t.label : t.tooltip || "soon"} onClick={() => t.enabled && setSetupServerType(t.id as ServerInstallType)}>{t.label}</button>)}</div></div>}
               {setupStep === 4 && <div className="auth-form-stack"><label>Version</label><select value={setupVersion} onChange={(e) => setSetupVersion(e.target.value)}><option value="">Choose version</option>{setupVersionOptions.map((v) => <option key={v} value={v}>{v}</option>)}</select></div>}
+              {setupStep === 5 && <div className="auth-form-stack"><label>Recovery Keys</label><p className="muted">Save these 10 keys now. Each key can be used once to recover access if you forget your password.</p><textarea readOnly value={setupRecoveryKeys.join("\n")} rows={10} /><div className="row"><button type="button" onClick={() => copyRecoveryKeys(setupRecoveryKeys).catch((e) => setSetupError(e.message))}>Copy Keys</button><button type="button" onClick={() => downloadRecoveryKeys(setupRecoveryKeys)}>Download Keys</button></div></div>}
               {!!setupError && <div className="banner warn">{setupError}</div>}
-              <div className="row auth-actions-row">{setupStep > 0 && <button onClick={() => setSetupStep((prev) => prev - 1)}>Back</button>}<button className="btn-start auth-primary-btn" onClick={() => finishSetup().catch((e) => setSetupError(e.message))}>{setupStep < 4 ? "Next" : "Finish Setup"}</button></div>
+              <div className="row auth-actions-row">{setupStep > 0 && setupStep < 5 && <button onClick={() => setSetupStep((prev) => prev - 1)}>Back</button>}<button className="btn-start auth-primary-btn" onClick={() => finishSetup().catch((e) => setSetupError(e.message))}>{setupStep < 4 ? "Next" : setupStep === 4 ? "Generate Recovery Keys" : "Finish Setup"}</button></div>
             </div>
           ) : (
             <section className="auth-panel login-panel">
               <h2 className="auth-title login-title">Log In</h2>
               {needsBootstrap && <div className="banner warn">No account exists yet. Run initial setup.</div>}
-              <div className="auth-form-stack"><label>Email</label><input type="email" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} placeholder="Email address" /><label>Password</label><div className="password-input-wrap"><input type={showLoginPassword ? "text" : "password"} value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLogin().catch((err) => setLoginError(err.message)); }} placeholder="Password" /><button type="button" className="password-toggle-btn" onClick={() => setShowLoginPassword((prev) => !prev)}>{showLoginPassword ? "Hide" : "Show"}</button></div><div className="remember-options remember-options-grid"><label className="remember-row"><input type="checkbox" checked={rememberEmail} onChange={(e) => { const next = e.target.checked; setRememberEmail(next); if (!next && !rememberBoth) { localStorage.removeItem(STORAGE_KEY_LOGIN_EMAIL); localStorage.setItem(STORAGE_KEY_REMEMBER_EMAIL, "0"); } }} />Remember email</label><button type="button" className="remember-row remember-action-row" onClick={() => { setForgotEmail(""); setForgotModalNotice(""); setForgotModalError(""); setShowForgotModal(true); }}><span className="remember-action-icon"><i className="fa-solid fa-key" aria-hidden="true" /></span><span>Forgot password</span></button><label className="remember-row"><input type="checkbox" checked={rememberPassword} onChange={(e) => { const next = e.target.checked; setRememberPassword(next); if (!next && !rememberBoth) { localStorage.removeItem(STORAGE_KEY_LOGIN_PASSWORD); localStorage.setItem(STORAGE_KEY_REMEMBER_PASSWORD, "0"); } }} />Remember password</label><label className="remember-row"><input type="checkbox" checked={rememberBoth} onChange={(e) => { const next = e.target.checked; setRememberBoth(next); if (next) { setRememberEmail(true); setRememberPassword(true); } }} />Remember both</label></div></div>
+              <div className="auth-form-stack"><label>Email</label><input type="email" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} placeholder="Email address" /><label>Password</label><div className="password-input-wrap"><input type={showLoginPassword ? "text" : "password"} value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLogin().catch((err) => setLoginError(err.message)); }} placeholder="Password" /><button type="button" className="password-toggle-btn" onClick={() => setShowLoginPassword((prev) => !prev)}>{showLoginPassword ? "Hide" : "Show"}</button></div><div className="remember-options remember-options-grid"><label className="remember-row"><input type="checkbox" checked={rememberEmail} onChange={(e) => { const next = e.target.checked; setRememberEmail(next); if (!next) { localStorage.removeItem(STORAGE_KEY_LOGIN_EMAIL); localStorage.setItem(STORAGE_KEY_REMEMBER_EMAIL, "0"); } }} />Remember email</label><button type="button" className="remember-row remember-action-row" onClick={() => { setForgotEmail(""); setForgotRecoveryKey(""); setForgotModalNotice(""); setForgotModalError(""); setShowForgotModal(true); }}><span className="remember-action-icon"><i className="fa-solid fa-key" aria-hidden="true" /></span><span>Forgot password</span></button><label className="remember-row"><input type="checkbox" checked={rememberPassword} onChange={(e) => { const next = e.target.checked; setRememberPassword(next); if (!next) { localStorage.removeItem(STORAGE_KEY_LOGIN_PASSWORD); localStorage.setItem(STORAGE_KEY_REMEMBER_PASSWORD, "0"); } }} />Remember password</label></div></div>
               {!!loginError && <div className="banner warn">{loginError}</div>}
               <button className="auth-primary-btn" onClick={() => doLogin().catch((e) => setLoginError(e.message))}>Log In</button>
               {needsBootstrap && <button onClick={() => { setShowSetupModal(true); window.history.pushState({}, "", "/setup"); }}>Open Setup</button>}
@@ -1093,6 +1312,7 @@ export default function App() {
           {showForgotModal && (
             <div className="modal-backdrop" onClick={() => setShowForgotModal(false)}>
               <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+                <ModalCloseButton onClick={() => setShowForgotModal(false)} />
                 <h3>Forgot Password</h3>
                 <input
                   type="email"
@@ -1100,11 +1320,16 @@ export default function App() {
                   onChange={(e) => setForgotEmail(e.target.value)}
                   placeholder="Enter email"
                 />
+                <input
+                  value={forgotRecoveryKey}
+                  onChange={(e) => setForgotRecoveryKey(e.target.value)}
+                  placeholder="Enter recovery key"
+                />
                 {!!forgotModalError && <div className="banner warn">{forgotModalError}</div>}
                 {!!forgotModalNotice && <div className="banner info">{forgotModalNotice}</div>}
                 <div className="row">
                   <button onClick={() => setShowForgotModal(false)}>Close</button>
-                  <button className="btn-start" onClick={() => doForgotPassword().catch((e) => setForgotModalError(e.message))}>Send</button>
+                  <button className="btn-start" onClick={() => doForgotPassword().catch((e) => setForgotModalError(e.message))}>Use Key</button>
                 </div>
               </div>
             </div>
@@ -1141,7 +1366,35 @@ export default function App() {
             <div className="server-list-vertical">{servers.map((server) => {
               const addonSummary = serverAddonSummaries[server.id];
               const summaryTitle = addonSummary?.mode === "plugins" ? "Plugins" : addonSummary?.mode === "mods" ? "Mods" : "Mods/Plugins";
-              return <div key={server.id} className={selectedServerId === server.id ? "server-pill active server-item" : "server-pill server-item"} onClick={() => setSelectedServerId(server.id)}><img className="server-list-icon" src={`/api/servers/${encodeURIComponent(server.id)}/icon`} alt={`${server.name} icon`} /><div className="server-pill-text"><strong>{server.name}</strong><small>{server.type} {server.version}</small></div><div className="server-item-meta">{<div className="server-info-wrap" onMouseEnter={() => loadServerAddonSummary(server).catch((e) => setMessage(e.message))}><button className="server-info-btn" aria-label={`${server.name} addons`} title="Server addons" onClick={(e) => e.stopPropagation()}><i className="fa-solid fa-circle-info" aria-hidden="true" /></button><div className="server-info-popover" onClick={(e) => e.stopPropagation()}><strong>{summaryTitle}</strong>{serverAddonLoadingId === server.id && !addonSummary ? <div className="muted">Loading...</div> : addonSummary && addonSummary.items.length ? <ul>{addonSummary.items.slice(0, 8).map((item) => <li key={item}>{item}</li>)}</ul> : <div className="muted">No mods/plugins...</div>}</div></div>}{canOperateServer && <button className="server-rename-btn" aria-label="Rename server" onClick={(e) => { e.stopPropagation(); setServerToRename(server); setRenameServerName(server.name); setShowRenameServerModal(true); }} title="Rename server"><i className="fa-solid fa-pencil" aria-hidden="true" /></button>}{canOperateServer && server.type === "purpur" && <button className="server-update-btn" aria-label="Update server jar" onClick={(e) => { e.stopPropagation(); updateServerNow(server).catch((err) => setMessage(err.message)); }} title="Update server jar" disabled={!!updatingServerId}><i className="fa-solid fa-rotate-right" aria-hidden="true" /></button>}{canOperateServer && <button className="server-delete-btn" aria-label="Delete server" onClick={(e) => { e.stopPropagation(); setServerToDelete(server); setShowDeleteModal(true); }} title="Delete"><i className="fa-solid fa-trash-can" aria-hidden="true" /></button>}</div></div>;
+              return (
+                <div
+                  key={server.id}
+                  className={selectedServerId === server.id ? "server-pill active server-item" : "server-pill server-item"}
+                  onClick={() => setSelectedServerId(server.id)}
+                >
+                  <img className="server-list-icon" src={`/api/servers/${encodeURIComponent(server.id)}/icon`} alt={`${server.name} icon`} />
+                  <div className="server-pill-text">
+                    <strong>{server.name}</strong>
+                    <small>{server.type} {server.version}</small>
+                  </div>
+                  <div className="server-item-meta">
+                    <button
+                      className="server-info-btn"
+                      aria-label={`${server.name} addons`}
+                      title={`${summaryTitle}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openServerAddonsModal(server).catch((err) => setMessage(err.message));
+                      }}
+                    >
+                      <i className="fa-solid fa-circle-info" aria-hidden="true" />
+                    </button>
+                    {canOperateServer && <button className="server-rename-btn" aria-label="Rename server" onClick={(e) => { e.stopPropagation(); setServerToRename(server); setRenameServerName(server.name); setShowRenameServerModal(true); }} title="Rename server"><i className="fa-solid fa-pencil" aria-hidden="true" /></button>}
+                    {canOperateServer && server.type === "purpur" && <button className="server-update-btn" aria-label="Update server jar" onClick={(e) => { e.stopPropagation(); updateServerNow(server).catch((err) => setMessage(err.message)); }} title="Update server jar" disabled={!!updatingServerId}><i className="fa-solid fa-rotate-right" aria-hidden="true" /></button>}
+                    {canOperateServer && <button className="server-delete-btn" aria-label="Delete server" onClick={(e) => { e.stopPropagation(); setServerToDelete(server); setShowDeleteModal(true); }} title="Delete"><i className="fa-solid fa-trash-can" aria-hidden="true" /></button>}
+                  </div>
+                </div>
+              );
             })}</div>
             {canOperateServer && (
               <div className="server-sidebar-actions">
@@ -1342,28 +1595,76 @@ export default function App() {
                         </label>
                       )}
                     </div>
-                    <div className="file-list">
+                    <div className="users-list users-table-wrap addons-table-wrap">
                       {(pluginsLoading || modsLoading) && <div className="empty-list">Loading plugins/mods...</div>}
                       {addonsMode === "plugins" && !pluginsLoading && !plugins.length && <div className="empty-list">No plugins installed.</div>}
                       {addonsMode === "mods" && !modsLoading && !mods.length && <div className="empty-list">No mods installed.</div>}
-                      {addonsMode === "plugins" && !pluginsLoading && plugins.map((plugin) => (
-                        <div key={`plugin:${plugin.pluginId}`} className={selectedAddonKeys.includes(`plugin:${plugin.pluginId}`) ? "file-item selected plugin-row" : "file-item plugin-row"} onClick={() => toggleAddonSelection(`plugin:${plugin.pluginId}`)}>
-                          <div className="entry-main">
-                            <span className="entry-icon file" />
-                            <span className="entry-name">[Plugin] {plugin.pluginId}</span>
-                          </div>
-                          <small className="muted">{plugin.jarPath || plugin.folderPath || "plugin"}</small>
-                        </div>
-                      ))}
-                      {addonsMode === "mods" && !modsLoading && mods.map((mod) => (
-                        <div key={`mod:${mod.modId}`} className={selectedAddonKeys.includes(`mod:${mod.modId}`) ? "file-item selected plugin-row" : "file-item plugin-row"} onClick={() => toggleAddonSelection(`mod:${mod.modId}`)}>
-                          <div className="entry-main">
-                            <span className="entry-icon file" />
-                            <span className="entry-name">[Mod] {mod.modId}</span>
-                          </div>
-                          <small className="muted">{mod.jarPath}</small>
-                        </div>
-                      ))}
+                      {addonsMode === "plugins" && !pluginsLoading && !!plugins.length && (
+                        <table className="users-table addons-table">
+                          <thead>
+                            <tr>
+                              <th />
+                              <th>Name</th>
+                              <th>Version</th>
+                              <th>File</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {plugins.map((plugin) => {
+                              const key = `plugin:${plugin.pluginId}`;
+                              const selected = selectedAddonKeys.includes(key);
+                              return (
+                                <tr key={key} className={selected ? "selected-row" : ""} onClick={() => toggleAddonSelection(key)}>
+                                  <td>
+                                    <input
+                                      type="checkbox"
+                                      checked={selected}
+                                      onChange={() => toggleAddonSelection(key)}
+                                      onClick={(e) => e.stopPropagation()}
+                                    />
+                                  </td>
+                                  <td>{plugin.name || plugin.pluginId}</td>
+                                  <td>{plugin.version || "-"}</td>
+                                  <td className="muted">{plugin.jarPath || plugin.folderPath || "-"}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
+                      {addonsMode === "mods" && !modsLoading && !!mods.length && (
+                        <table className="users-table addons-table">
+                          <thead>
+                            <tr>
+                              <th />
+                              <th>Name</th>
+                              <th>Version</th>
+                              <th>File</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {mods.map((mod) => {
+                              const key = `mod:${mod.modId}`;
+                              const selected = selectedAddonKeys.includes(key);
+                              return (
+                                <tr key={key} className={selected ? "selected-row" : ""} onClick={() => toggleAddonSelection(key)}>
+                                  <td>
+                                    <input
+                                      type="checkbox"
+                                      checked={selected}
+                                      onChange={() => toggleAddonSelection(key)}
+                                      onClick={(e) => e.stopPropagation()}
+                                    />
+                                  </td>
+                                  <td>{mod.modId}</td>
+                                  <td>-</td>
+                                  <td className="muted">{mod.jarPath}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
                     </div>
                   </>
                 )}
@@ -1588,7 +1889,7 @@ export default function App() {
               <h2>Users</h2>
               <div className="users-layout">
                 <div className="users-top">
-                  <button className="btn-start create-user-btn" onClick={() => { setNewUsername(""); setNewEmail(""); setNewPassword(""); setNewRole("viewer"); setShowAddUserModal(true); }}><i className="fa-solid fa-user-plus" aria-hidden="true" /> Add User</button>
+                  {canEditUsers && <button className="btn-start create-user-btn" onClick={() => { setNewUsername(""); setNewEmail(""); setNewPassword(""); setNewRole("viewer"); setShowAddUserModal(true); }}><i className="fa-solid fa-user-plus" aria-hidden="true" /> Add User</button>}
                 </div>
                 <div className="users-bottom users-list users-table-wrap">
                   <table className="users-table">
@@ -1610,7 +1911,7 @@ export default function App() {
                             <td>{user.email || "no-email"}</td>
                             <td>
                               <select
-                                disabled={isOwner}
+                                disabled={!canEditUsers || isOwner}
                                 value={isOwner ? "owner" : (userRoleDraft[user.id] || user.role)}
                                 onChange={(e) => setUserRoleDraft((prev) => ({ ...prev, [user.id]: e.target.value as UserRole }))}
                               >
@@ -1627,9 +1928,10 @@ export default function App() {
                             <td>{user.active ? "active" : "disabled"}</td>
                             <td>
                               <div className="row wrap">
-                                <button disabled={isOwner} onClick={() => api.updateUser(user.id, { role: userRoleDraft[user.id] || user.role }).then(refreshUsers).catch((e) => setMessage(e.message))}><i className="fa-solid fa-floppy-disk" aria-hidden="true" /> Save Role</button>
-                                <button disabled={isOwner} onClick={() => api.updateUser(user.id, { active: !user.active }).then(refreshUsers).catch((e) => setMessage(e.message))}>{user.active ? <><i className="fa-solid fa-user-slash" aria-hidden="true" /> Disable</> : <><i className="fa-solid fa-user-check" aria-hidden="true" /> Enable</>}</button>
-                                <button disabled={isOwner} className="btn-danger" onClick={() => api.deleteUser(user.id).then(refreshUsers).catch((e) => setMessage(e.message))}><i className="fa-solid fa-user-minus" aria-hidden="true" /> Remove</button>
+                                <button disabled={!canEditUsers || isOwner} onClick={() => api.updateUser(user.id, { role: userRoleDraft[user.id] || user.role }).then(refreshUsers).catch((e) => setMessage(e.message))}><i className="fa-solid fa-floppy-disk" aria-hidden="true" /> Save Role</button>
+                                <button disabled={!canEditUsers || isOwner} onClick={() => api.updateUser(user.id, { active: !user.active }).then(refreshUsers).catch((e) => setMessage(e.message))}>{user.active ? <><i className="fa-solid fa-user-slash" aria-hidden="true" /> Disable</> : <><i className="fa-solid fa-user-check" aria-hidden="true" /> Enable</>}</button>
+                                {isOwner && <button onClick={() => regenerateRecoveryKeysForUser(user.id, user.username).catch((e) => setMessage(e.message))}><i className="fa-solid fa-key" aria-hidden="true" /> New PassKeys</button>}
+                                <button disabled={!canEditUsers || isOwner} className="btn-danger" onClick={() => api.deleteUser(user.id).then(refreshUsers).catch((e) => setMessage(e.message))}><i className="fa-solid fa-user-minus" aria-hidden="true" /> Remove</button>
                               </div>
                             </td>
                           </tr>
@@ -1646,12 +1948,44 @@ export default function App() {
         <footer className="footer-note app-footer">
           This project is not affiliated with Mojang or Microsoft in any way. Licensed under{" "}
           <a href="https://www.gnu.org/licenses/gpl-3.0.en.html" target="_blank" rel="noreferrer">GNU v3</a>. Source:{" "}
-          <a href="#">MC Control Panel</a>.
+          <a href="https://github.com/surgamingoninsulin/MC-Control-Panel" target="_blank">MC Control Panel</a>.
         </footer>
+
+        {showServerAddonsModal && (
+          <div className="modal-backdrop" onClick={() => setShowServerAddonsModal(false)}>
+            <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+              <ModalCloseButton onClick={() => setShowServerAddonsModal(false)} />
+              <h3>Server Addons</h3>
+              {serverAddonLoadingId === serverAddonsModalServerId && !serverAddonSummaries[serverAddonsModalServerId] ? (
+                <div className="muted">Loading...</div>
+              ) : serverAddonSummaries[serverAddonsModalServerId]?.items?.length ? (
+                <div className="addon-summary-table-wrap">
+                  <table className="addon-summary-table">
+                    <thead><tr><th>Name</th><th>Version</th></tr></thead>
+                    <tbody>
+                      {serverAddonSummaries[serverAddonsModalServerId]!.items.map((item, idx) => (
+                        <tr key={`${item.name}-${idx}`}>
+                          <td>{item.name}</td>
+                          <td>{item.version || "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="muted">No mods/plugins...</div>
+              )}
+              <div className="row">
+                <button onClick={() => setShowServerAddonsModal(false)}>Close</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {showCreateFsModal && (
           <div className="modal-backdrop" onClick={() => setShowCreateFsModal(false)}>
             <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+              <ModalCloseButton onClick={() => setShowCreateFsModal(false)} />
               {!createFsType && (
                 <>
                   <h3>Create New</h3>
@@ -1686,13 +2020,14 @@ export default function App() {
 
         {showMenuDrawer && <div className="menu-drawer-backdrop" onClick={() => setShowMenuDrawer(false)}><aside className="menu-drawer" onClick={(e) => e.stopPropagation()}><div className="menu-drawer-header"><h3>MC Control Panel</h3><button className="menu-toggle-btn" onClick={() => setShowMenuDrawer(false)}><img src="/minecraft-icon.png" alt="Toggle menu" className="menu-toggle-logo" /></button></div><nav className="menu-drawer-nav"><button className={activeView === "console" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("console"); setShowMenuDrawer(false); }}>Console</button><button className={activeView === "players" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("players"); setShowMenuDrawer(false); }}>Players</button><button className={activeView === "files" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("files"); setShowMenuDrawer(false); }}>Files</button><button disabled={!addonsEnabled} title={!addonsEnabled ? "Disabled for vanilla servers" : "Plugins/Mods"} className={activeView === "plugins" ? "menu-btn active" : "menu-btn"} onClick={() => { if (!addonsEnabled) return; goToView("plugins"); setShowMenuDrawer(false); }}>Plugins/Mods</button><button className={activeView === "settings" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("settings"); setShowMenuDrawer(false); }}>Server Management</button>{canManageUsers && <button className={activeView === "users" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("users"); setShowMenuDrawer(false); }}>Users</button>}</nav></aside></div>}
 
-        {showDeleteModal && serverToDelete && <div className="modal-backdrop" onClick={() => setShowDeleteModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><h3>Delete Server</h3><p>Delete <strong>{serverToDelete.name}</strong>? This cannot be undone.</p><div className="row"><button onClick={() => setShowDeleteModal(false)}>Cancel</button><button className="btn-danger" onClick={() => deleteServerNow().catch((e) => setMessage(e.message))}>Delete</button></div></div></div>}
+        {showDeleteModal && serverToDelete && <div className="modal-backdrop" onClick={() => setShowDeleteModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><ModalCloseButton onClick={() => setShowDeleteModal(false)} /><h3>Delete Server</h3><p>Delete <strong>{serverToDelete.name}</strong>? This cannot be undone.</p><div className="row"><button onClick={() => setShowDeleteModal(false)}>Cancel</button><button className="btn-danger" onClick={() => deleteServerNow().catch((e) => setMessage(e.message))}>Delete</button></div></div></div>}
 
-        {showRenameServerModal && serverToRename && <div className="modal-backdrop" onClick={() => setShowRenameServerModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><h3>Rename Server</h3><p>Rename <strong>{serverToRename.name}</strong> and its server folder.</p><input value={renameServerName} onChange={(e) => setRenameServerName(e.target.value)} placeholder="New server name" autoFocus /><div className="row"><button onClick={() => setShowRenameServerModal(false)}>Cancel</button><button className="btn-start" onClick={() => renameServerNow().catch((e) => setMessage(e.message))}>Rename</button></div></div></div>}
+        {showRenameServerModal && serverToRename && <div className="modal-backdrop" onClick={() => setShowRenameServerModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><ModalCloseButton onClick={() => setShowRenameServerModal(false)} /><h3>Rename Server</h3><p>Rename <strong>{serverToRename.name}</strong> and its server folder.</p><input value={renameServerName} onChange={(e) => setRenameServerName(e.target.value)} placeholder="New server name" autoFocus /><div className="row"><button onClick={() => setShowRenameServerModal(false)}>Cancel</button><button className="btn-start" onClick={() => renameServerNow().catch((e) => setMessage(e.message))}>Rename</button></div></div></div>}
 
         {showEulaModal && (
           <div className="modal-backdrop" onClick={() => setShowEulaModal(false)}>
             <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+              <ModalCloseButton onClick={() => setShowEulaModal(false)} />
               <h3>Minecraft EULA Required</h3>
               <p>This server cannot start until the Minecraft EULA is accepted.</p>
               <p className="muted">Review the EULA before continuing.</p>
@@ -1712,13 +2047,8 @@ export default function App() {
         {showAddServerModal && (
           <div className="modal-backdrop" onClick={() => setShowAddServerModal(false)}>
             <div className="modal-card setup-modal" onClick={(e) => e.stopPropagation()}>
+              <ModalCloseButton onClick={() => setShowAddServerModal(false)} />
               <h3>Add Server</h3>
-              {addServerMode === "chooser" && (
-                <div className="row">
-                  <button className="btn-start" onClick={() => setAddServerMode("install")}><i className="fa-solid fa-server" aria-hidden="true" /> Install New</button>
-                  <button onClick={() => setAddServerMode("import")}><i className="fa-solid fa-file-import" aria-hidden="true" /> Import Server</button>
-                </div>
-              )}
               {addServerMode === "install" && (
                 <>
                   <input value={installName} onChange={(e) => setInstallName(e.target.value)} placeholder="Server name" />
@@ -1741,19 +2071,15 @@ export default function App() {
                       <option key={v} value={v}>{v}</option>
                     ))}
                   </select>
-                  <input
-                    ref={installIconRef}
-                    type="file"
-                    accept=".png,image/png"
-                    hidden
-                    onChange={(e) => setInstallIconFile((e.target.files && e.target.files[0]) || null)}
-                  />
                   <div className="row">
-                    <button onClick={() => installIconRef.current?.click()}>Select Server Icon (Optional)</button>
+                    <button onClick={() => openIconModal("install").catch((e) => setMessage(e.message))}>Select Server Icon (Optional)</button>
                   </div>
-                  <small className="muted">{installIconFile ? installIconFile.name : "No icon selected. Default server-icon.png will be used."}</small>
+                  <small className="muted">
+                    {installIconFile
+                      ? `Selected icon: ${installIconFile}`
+                      : "No icon selected. Default icon _31278649105.png will be used."}
+                  </small>
                   <div className="row">
-                    <button onClick={() => setAddServerMode("chooser")}>Back</button>
                     <button className="btn-start" onClick={() => installServerNow().catch((e) => setMessage(e.message))}>Install</button>
                   </div>
                 </>
@@ -1772,13 +2098,20 @@ export default function App() {
                   <div className="row">
                     <button onClick={() => importRef.current?.click()}>Browse Folder</button>
                   </div>
+                  <div className="row">
+                    <button onClick={() => openIconModal("import").catch((e) => setMessage(e.message))}>Select Server Icon (Optional)</button>
+                  </div>
                   <small className="muted">
                     {importFiles.length
                       ? `${importFiles.length} files selected from folder`
                       : "Choose the server root folder to import"}
                   </small>
+                  <small className="muted">
+                    {importIconFile
+                      ? `Selected icon: ${importIconFile} (will replace imported server-icon.png if present)`
+                      : "No icon selected. Keep imported icon if present, otherwise use default."}
+                  </small>
                   <div className="row">
-                    <button onClick={() => setAddServerMode("chooser")}>Back</button>
                     <button className="btn-start" onClick={() => importServerNow().catch((e) => setMessage(e.message))}>Import</button>
                   </div>
                 </>
@@ -1787,13 +2120,70 @@ export default function App() {
           </div>
         )}
 
-        {showConfigEditor && configEditor && <div className="modal-backdrop" onClick={() => closeConfigEditor()}><div className="modal-card config-editor-modal" onClick={(e) => e.stopPropagation()}><h3>Config Editor</h3><div className="muted">{configEditor.path}</div><div className="config-editor-monaco"><Editor height="55dvh" language={configLanguage(configEditor.path)} theme="vs-dark" value={configEditor.content} onChange={(value) => setConfigEditor({ ...configEditor, content: value ?? "" })} options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: "on", automaticLayout: true }} /></div>{!!configEditorError && <div className="banner warn">{configEditorError}</div>}<div className="row"><button onClick={() => closeConfigEditor()}>Cancel</button><button className="btn-start" onClick={() => saveConfigEditor().catch((e) => setConfigEditorError(e.message))}>Save</button></div></div></div>}
+        {showInstallIconModal && (
+          <div className="modal-backdrop" onClick={() => setShowInstallIconModal(false)}>
+            <div className="modal-card setup-modal icon-picker-modal" onClick={(e) => e.stopPropagation()}>
+              <ModalCloseButton onClick={() => setShowInstallIconModal(false)} />
+              <h3>Select Server Icon</h3>
+              <div className="icon-picker-grid">
+                {iconDatabaseEntries.map((entry) => (
+                  <div
+                    key={entry.file}
+                    className={installIconModalSelectedFile === entry.file ? "icon-picker-item active" : "icon-picker-item"}
+                    onClick={() => {
+                      setInstallIconModalSelectedFile(entry.file);
+                      setInstallIconModalUpload(null);
+                    }}
+                    title={entry.file}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setInstallIconModalSelectedFile(entry.file);
+                        setInstallIconModalUpload(null);
+                      }
+                    }}
+                  >
+                    {!entry.isDefault && <button type="button" className="icon-picker-delete-btn" aria-label={`Delete ${entry.file}`} title="Delete image" onClick={(e) => { e.stopPropagation(); deleteInstallIconEntry(entry.file).catch((err) => setMessage(err.message)); }}><i className="fa-solid fa-trash-can" aria-hidden="true" /></button>}
+                    <img src={entry.url} alt={entry.file} />
+                    <span>{entry.isDefault ? `${entry.file} (default)` : entry.file}</span>
+                  </div>
+                ))}
+              </div>
+              <input
+                ref={installIconRef}
+                type="file"
+                accept=".png,image/png"
+                hidden
+                onChange={(e) => {
+                  const file = (e.target.files && e.target.files[0]) || null;
+                  setInstallIconModalUpload(file);
+                }}
+              />
+              <div className="row icon-picker-actions">
+                <button type="button" onClick={() => installIconRef.current?.click()}>Browse Other Image</button>
+                <button type="button" className="btn-start" onClick={() => confirmIconSelection().catch((e) => setMessage(e.message))}>Select Image</button>
+              </div>
+              <small className="muted">
+                {installIconModalUpload
+                  ? `Pending upload: ${installIconModalUpload.name}`
+                  : installIconModalSelectedFile
+                    ? `Selected: ${installIconModalSelectedFile}`
+                    : "Select an image or browse a new .png"}
+              </small>
+            </div>
+          </div>
+        )}
 
-        {currentUser?.mustChangePassword && <div className="modal-backdrop" onClick={(e) => e.stopPropagation()}><div className="modal-card" onClick={(e) => e.stopPropagation()}><h3>Set New Password</h3><p>You logged in with a temporary password. Set a new password to continue.</p><div className="password-input-wrap"><input type={showForcePassword ? "text" : "password"} value={forcePassword} onChange={(e) => setForcePassword(e.target.value)} placeholder="New password" /><button type="button" className="password-toggle-btn" onClick={() => setShowForcePassword((prev) => !prev)}>{showForcePassword ? "Hide" : "Show"}</button></div><div className="password-input-wrap"><input type={showForcePasswordConfirm ? "text" : "password"} value={forcePasswordConfirm} onChange={(e) => setForcePasswordConfirm(e.target.value)} placeholder="Confirm password" /><button type="button" className="password-toggle-btn" onClick={() => setShowForcePasswordConfirm((prev) => !prev)}>{showForcePasswordConfirm ? "Hide" : "Show"}</button></div>{!!forcePasswordError && <div className="banner warn">{forcePasswordError}</div>}<div className="row"><button className="btn-start" onClick={() => setForcedPasswordNow().catch((e) => setForcePasswordError(e.message))}>Set</button></div></div></div>}
+        {showConfigEditor && configEditor && <div className="modal-backdrop" onClick={() => closeConfigEditor()}><div className="modal-card config-editor-modal" onClick={(e) => e.stopPropagation()}><ModalCloseButton onClick={() => closeConfigEditor()} /><h3>Config Editor</h3><div className="muted">{configEditor.path}</div><div className="config-editor-monaco"><Editor height="55dvh" language={configLanguage(configEditor.path)} theme="vs-dark" value={configEditor.content} onChange={(value) => setConfigEditor({ ...configEditor, content: value ?? "" })} options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: "on", automaticLayout: true }} /></div>{!!configEditorError && <div className="banner warn">{configEditorError}</div>}<div className="row"><button onClick={() => closeConfigEditor()}>Cancel</button><button className="btn-start" onClick={() => saveConfigEditor().catch((e) => setConfigEditorError(e.message))}>Save</button></div></div></div>}
+
+        {currentUser?.mustChangePassword && <div className="modal-backdrop" onClick={(e) => e.stopPropagation()}><div className="modal-card" onClick={(e) => e.stopPropagation()}><ModalCloseButton onClick={() => doLogout().catch((e) => setForcePasswordError(e.message))} /><h3>Set New Password</h3><p>You logged in with a temporary password. Set a new password to continue.</p>{needsRecoveryKeyRegeneration && <div className="banner info">You have 1 or fewer recovery keys left. Regenerate 10 new keys after setting your password.</div>}<div className="password-input-wrap"><input type={showForcePassword ? "text" : "password"} value={forcePassword} onChange={(e) => setForcePassword(e.target.value)} placeholder="New password" /><button type="button" className="password-toggle-btn" onClick={() => setShowForcePassword((prev) => !prev)}>{showForcePassword ? "Hide" : "Show"}</button></div><div className="password-input-wrap"><input type={showForcePasswordConfirm ? "text" : "password"} value={forcePasswordConfirm} onChange={(e) => setForcePasswordConfirm(e.target.value)} placeholder="Confirm password" /><button type="button" className="password-toggle-btn" onClick={() => setShowForcePasswordConfirm((prev) => !prev)}>{showForcePasswordConfirm ? "Hide" : "Show"}</button></div>{!!forcePasswordError && <div className="banner warn">{forcePasswordError}</div>}<div className="row"><button className="btn-start" onClick={() => setForcedPasswordNow().catch((e) => setForcePasswordError(e.message))}>Set</button>{needsRecoveryKeyRegeneration && <button onClick={() => regenerateRecoveryKeysNow().catch((e) => setForcePasswordError(e.message))}>Regenerate Keys</button>}</div></div></div>}
 
         {showAddUserModal && (
           <div className="modal-backdrop" onClick={() => setShowAddUserModal(false)}>
             <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+              <ModalCloseButton onClick={() => setShowAddUserModal(false)} />
               <h3>Add User</h3>
               <div className="auth-form-stack">
                 <label>Enter username</label>
@@ -1816,9 +2206,9 @@ export default function App() {
           </div>
         )}
 
-        {showAuthErrorModal && <div className="modal-backdrop" onClick={() => setShowAuthErrorModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><h3>Authentication Required</h3><p>Login is required for this action, or your account does not have permission.</p><p className="muted">Details: {authErrorDetail}</p><div className="row"><button onClick={() => setShowAuthErrorModal(false)}>Close</button><button className="btn-start" onClick={() => doLogout().finally(() => setShowAuthErrorModal(false))}>Go To Login</button></div></div></div>}
+        {showRecoveryKeysModal && <div className="modal-backdrop" onClick={() => setShowRecoveryKeysModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><ModalCloseButton onClick={() => setShowRecoveryKeysModal(false)} /><h3>{recoveryKeysModalTitle}</h3><p className="muted">Save these keys now. Each key can be used once for password recovery.</p><textarea readOnly value={recoveryKeysModalKeys.join("\n")} rows={10} /><div className="row"><button onClick={() => copyRecoveryKeys(recoveryKeysModalKeys).catch((e) => setMessage(e.message))}>Copy</button><button onClick={() => downloadRecoveryKeys(recoveryKeysModalKeys)}>Download</button><button className="btn-start" onClick={() => setShowRecoveryKeysModal(false)}>Done</button></div></div></div>}
 
-        {showInfoModal && <div className="modal-backdrop" onClick={() => setShowInfoModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><h3>Notice</h3><p>{infoModalDetail}</p><div className="row"><button onClick={() => setShowInfoModal(false)}>Close</button></div></div></div>}
+        {showInfoModal && <div className="modal-backdrop" onClick={() => setShowInfoModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><ModalCloseButton onClick={() => setShowInfoModal(false)} /><h3>Notice</h3><p>{infoModalDetail}</p><div className="row"><button onClick={() => setShowInfoModal(false)}>Close</button></div></div></div>}
 
         {dragOverlayVisible && (activeView === "files" || (activeView === "plugins" && addonsEnabled)) && <div className="drop-overlay-modal" onDragOver={(e) => e.preventDefault()}><div className="drop-overlay-content"><div className="drop-icon"><i className="fa-solid fa-cloud-arrow-up" aria-hidden="true" /></div><h3>Drop Files Here</h3><p>{activeView === "files" ? "Upload into current folder" : addonsMode === "plugins" ? "Install plugin artifact(s)" : "Install mod/modpack artifact(s)"}</p></div></div>}
       </main>

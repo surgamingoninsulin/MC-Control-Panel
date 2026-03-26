@@ -6,7 +6,7 @@ import type { UserRole } from "../services/AuthService.js";
 export const createUserRoutes = (ctx: AppContext): Router => {
   const router = Router();
 
-  router.get("/", requireRole(["owner"]), (_req, res) => {
+  router.get("/", requireRole(["owner", "admin"]), (_req, res) => {
     res.json({ users: ctx.auth.listUsers() });
   });
 
@@ -43,6 +43,19 @@ export const createUserRoutes = (ctx: AppContext): Router => {
       res.json({ ok: true });
     } catch (error) {
       res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  router.post("/:id/recovery-keys/regenerate", requireRole(["owner", "admin"]), (req, res) => {
+    try {
+      const id = String(req.params.id || "");
+      const target = ctx.auth.listUsers().find((entry) => entry.id === id);
+      if (!target) return res.status(404).json({ error: "User not found." });
+      if (target.role !== "owner") return res.status(400).json({ error: "Recovery keys can only be regenerated for the owner user." });
+      const out = ctx.auth.regenerateRecoveryKeysByUserId(id);
+      return res.json({ user: out.user, recoveryKeys: out.recoveryKeys });
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
     }
   });
 

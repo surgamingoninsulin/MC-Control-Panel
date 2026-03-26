@@ -6,22 +6,26 @@ import type { ServerType } from "../services/ServerRegistryService.js";
 
 const ENABLED_TYPES: ServerType[] = ["vanilla", "paper", "spigot", "purpur", "forge", "neoforge", "fabric"];
 
-const parseInstallInput = (body: unknown): { name: string; type: ServerType; version: string } => {
+const parseInstallInput = (
+  body: unknown
+): { name: string; type: ServerType; version: string; iconDatabaseFile: string } => {
   const payload = (body || {}) as Record<string, unknown>;
   const name = String(payload.name || "").trim();
   const type = String(payload.type || "").trim() as ServerType;
   const version = String(payload.version || "").trim();
+  const iconDatabaseFile = String(payload.iconDatabaseFile || "").trim();
   if (!name) throw new Error("Server name is required.");
   if (!type || !ENABLED_TYPES.includes(type)) throw new Error("A supported server type is required.");
   if (!version) throw new Error("Minecraft version is required.");
-  return { name, type, version };
+  return { name, type, version, iconDatabaseFile };
 };
 
-const parseImportInput = (body: unknown): { name: string } => {
+const parseImportInput = (body: unknown): { name: string; iconDatabaseFile: string } => {
   const payload = (body || {}) as Record<string, unknown>;
   const name = String(payload.name || "").trim();
+  const iconDatabaseFile = String(payload.iconDatabaseFile || "").trim();
   if (!name) throw new Error("Server name is required.");
-  return { name };
+  return { name, iconDatabaseFile };
 };
 
 export const createServerRegistryRoutes = (ctx: AppContext): Router => {
@@ -93,7 +97,10 @@ export const createServerRegistryRoutes = (ctx: AppContext): Router => {
         if (!/\.png$/i.test(String(req.file.originalname || ""))) {
           return res.status(400).json({ error: "Server icon must be a .png file." });
         }
+        ctx.servers.saveIconToDatabase(req.file.buffer);
         ctx.servers.setServerIcon(created.id, req.file.buffer);
+      } else if (input.iconDatabaseFile) {
+        ctx.servers.setServerIconFromDatabase(created.id, input.iconDatabaseFile);
       }
       const install = await ctx.installer.install(created);
       const server =
@@ -138,6 +145,59 @@ export const createServerRegistryRoutes = (ctx: AppContext): Router => {
     }
   });
 
+  router.get("/icon-library/list", requireRole(["owner", "admin", "viewer"]), (_req, res) => {
+    try {
+      const icons = ctx.servers.listIconDatabase().map((entry) => ({
+        file: entry.file,
+        isDefault: entry.isDefault,
+        url: `/api/servers/icon-library/file/${encodeURIComponent(entry.file)}`
+      }));
+      return res.json({ icons });
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  router.get("/icon-library/file/:file", requireRole(["owner", "admin", "viewer"]), (req, res) => {
+    try {
+      const file = String(req.params.file || "");
+      const iconPath = ctx.servers.getIconFromDatabase(file);
+      return res.sendFile(iconPath);
+    } catch (error) {
+      return res.status(404).json({ error: (error as Error).message });
+    }
+  });
+
+  router.post("/icon-library/upload", requireRole(["owner", "admin"]), upload.single("icon"), (req, res) => {
+    try {
+      const file = req.file;
+      if (!file) return res.status(400).json({ error: "Icon file is required." });
+      if (!/\.png$/i.test(String(file.originalname || ""))) {
+        return res.status(400).json({ error: "Server icon must be a .png file." });
+      }
+      const savedFile = ctx.servers.saveIconToDatabase(file.buffer);
+      return res.json({
+        icon: {
+          file: savedFile,
+          isDefault: false,
+          url: `/api/servers/icon-library/file/${encodeURIComponent(savedFile)}`
+        }
+      });
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  router.delete("/icon-library/file/:file", requireRole(["owner", "admin"]), (req, res) => {
+    try {
+      const file = String(req.params.file || "");
+      ctx.servers.deleteIconFromDatabase(file);
+      return res.json({ ok: true });
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
   router.get("/:id/addons-summary", requireRole(["owner", "admin", "viewer"]), async (req, res) => {
     try {
       const id = String(req.params.id);
@@ -147,10 +207,15 @@ export const createServerRegistryRoutes = (ctx: AppContext): Router => {
       }
       if (server.type === "paper" || server.type === "spigot" || server.type === "purpur") {
         const plugins = await ctx.plugins.list(server.rootPath);
-        return res.json({ summary: { mode: "plugins", items: plugins.map((entry) => entry.pluginId) } });
+        return res.json({
+          summary: {
+            mode: "plugins",
+            items: plugins.map((entry) => ({ name: entry.name || entry.pluginId, version: entry.version || "-" }))
+          }
+        });
       }
       const mods = await ctx.mods.list(server.rootPath);
-      return res.json({ summary: { mode: "mods", items: mods.map((entry) => entry.modId) } });
+      return res.json({ summary: { mode: "mods", items: mods.map((entry) => ({ name: entry.modId, version: "-" })) } });
     } catch (error) {
       return res.status(400).json({ error: (error as Error).message });
     }
@@ -178,6 +243,10 @@ export const createServerRegistryRoutes = (ctx: AppContext): Router => {
               version: detected.version || server.version
             })
           : server;
+      if (input.iconDatabaseFile) {
+        // If user picked an optional icon for import, always overwrite imported server-icon.png.
+        ctx.servers.setServerIconFromDatabase(updatedServer.id, input.iconDatabaseFile);
+      }
       return res.json({ server: updatedServer, ...out, detected });
     } catch (error) {
       return res.status(400).json({ error: (error as Error).message });

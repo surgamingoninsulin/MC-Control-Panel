@@ -73,6 +73,8 @@ export type FileEntry = {
 
 export type PluginEntry = {
   pluginId: string;
+  name?: string;
+  version?: string;
   jarPath?: string;
   folderPath?: string;
 };
@@ -97,7 +99,7 @@ export type ServerProfile = {
 
 export type ServerAddonSummary = {
   mode: "plugins" | "mods" | "none";
-  items: string[];
+  items: Array<{ name: string; version?: string }>;
 };
 
 export type ServerTypeOption = {
@@ -105,6 +107,12 @@ export type ServerTypeOption = {
   label: string;
   enabled: boolean;
   tooltip?: string;
+};
+
+export type ServerIconEntry = {
+  file: string;
+  isDefault: boolean;
+  url: string;
 };
 
 export type UserRole = "owner" | "admin" | "viewer";
@@ -118,6 +126,7 @@ export type UserRecord = {
   role: UserRole;
   active: boolean;
   mustChangePassword: boolean;
+  recoveryKeysRemaining?: number;
   tempPasswordExpiresAt: string | null;
   createdAt: string;
   updatedAt: string;
