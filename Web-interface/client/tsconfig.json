@@ -10,6 +10,7 @@
     "skipLibCheck": true,
     "moduleResolution": "Bundler",
     "allowSyntheticDefaultImports": true,
+    "noEmit": true,
     "strict": true,
     "jsx": "react-jsx",
     "types": [

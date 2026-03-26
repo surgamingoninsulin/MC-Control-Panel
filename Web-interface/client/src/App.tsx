@@ -2,12 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { api } from "./api";
 import type {
+  AuditEvent,
+  BackupRecord,
   ConsoleLine,
   EulaState,
   FileEntry,
+  JobRun,
+  MetricsSample,
+  NodeRecord,
   ModEntry,
+  NotificationPreference,
+  NotificationRecord,
   PlayerRecord,
   PluginEntry,
+  ScheduledJob,
   ServerAddonSummary,
   ServerInstallType,
   ServerIconEntry,
@@ -21,7 +29,7 @@ import type {
   UserRole
 } from "./types";
 
-type View = "console" | "players" | "files" | "plugins" | "settings" | "users";
+type View = "console" | "players" | "files" | "plugins" | "settings" | "users" | "backups" | "notifications" | "metrics" | "audit";
 type AddServerMode = "install" | "import";
 type UiUserRole = "admin" | "viewer";
 
@@ -47,6 +55,22 @@ const DEFAULT_PROPERTIES: ServerPropertiesState = {
   path: "server.properties",
   mtime: null,
   fields: []
+};
+const DEFAULT_METRIC_SAMPLE: MetricsSample = {
+  id: "default",
+  nodeId: "local",
+  serverId: null,
+  createdAt: new Date(0).toISOString(),
+  cpuPercent: 0,
+  memoryUsedMb: 0,
+  memoryTotalMb: 0,
+  diskUsedMb: 0,
+  diskTotalMb: 0,
+  uptimeMs: 0,
+  running: false,
+  pid: null,
+  backupStorageMb: 0,
+  recentJobFailures: 0
 };
 const PROPERTY_CATEGORY_LABELS: Record<ServerPropertyField["category"], string> = {
   access: "Access",
@@ -145,6 +169,10 @@ const viewFromPath = (pathName: string): View => {
   if (lower === "/players") return "players";
   if (lower === "/files") return "files";
   if (lower === "/plugins-mods") return "plugins";
+  if (lower === "/backups") return "backups";
+  if (lower === "/notifications") return "notifications";
+  if (lower === "/metrics") return "metrics";
+  if (lower === "/audit") return "audit";
   if (lower === "/settings" || lower === "/server-management") return "settings";
   if (lower === "/users") return "users";
   return "console";
@@ -154,6 +182,10 @@ const pathFromView = (view: View): string => {
   if (view === "players") return "/players";
   if (view === "files") return "/files";
   if (view === "plugins") return "/plugins-mods";
+  if (view === "backups") return "/backups";
+  if (view === "notifications") return "/notifications";
+  if (view === "metrics") return "/metrics";
+  if (view === "audit") return "/audit";
   if (view === "settings") return "/server-management";
   if (view === "users") return "/users";
   return "/console";
@@ -258,6 +290,8 @@ export default function App() {
     () => localStorage.getItem(STORAGE_KEY_REMEMBER_PASSWORD) === "1" || localStorage.getItem(STORAGE_KEY_REMEMBER_BOTH) === "1"
   );
   const [loginError, setLoginError] = useState("");
+  const [loginTwoFactorCode, setLoginTwoFactorCode] = useState("");
+  const [pendingTwoFactorChallengeId, setPendingTwoFactorChallengeId] = useState("");
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [forgotEmail, setForgotEmail] = useState("");
   const [forgotRecoveryKey, setForgotRecoveryKey] = useState("");
@@ -269,6 +303,11 @@ export default function App() {
   const [recoveryKeysModalKeys, setRecoveryKeysModalKeys] = useState<string[]>([]);
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [showSetupPassword, setShowSetupPassword] = useState(false);
+  const [showTwoFactorModal, setShowTwoFactorModal] = useState(false);
+  const [twoFactorSetupSecret, setTwoFactorSetupSecret] = useState("");
+  const [twoFactorSetupQr, setTwoFactorSetupQr] = useState("");
+  const [twoFactorSetupCode, setTwoFactorSetupCode] = useState("");
+  const [twoFactorDisableCode, setTwoFactorDisableCode] = useState("");
 
   const [servers, setServers] = useState<ServerProfile[]>([]);
   const [selectedServerId, setSelectedServerId] = useState("");
@@ -365,6 +404,30 @@ export default function App() {
   const [addPlayerBusy, setAddPlayerBusy] = useState(false);
   const [showEulaModal, setShowEulaModal] = useState(false);
   const [revealedPropertyKeys, setRevealedPropertyKeys] = useState<Record<string, boolean>>({});
+  const [backups, setBackups] = useState<BackupRecord[]>([]);
+  const [backupsLoading, setBackupsLoading] = useState(false);
+  const [jobs, setJobs] = useState<ScheduledJob[]>([]);
+  const [jobRuns, setJobRuns] = useState<JobRun[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(false);
+  const [newJobName, setNewJobName] = useState("");
+  const [newJobKind, setNewJobKind] = useState<ScheduledJob["kind"]>("backup");
+  const [newJobInterval, setNewJobInterval] = useState(60);
+  const [newJobCommand, setNewJobCommand] = useState("");
+  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
+  const [notificationPrefs, setNotificationPrefs] = useState<NotificationPreference | null>(null);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [metrics, setMetrics] = useState<MetricsSample[]>([]);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditActionFilter, setAuditActionFilter] = useState("");
+  const [auditResultFilter, setAuditResultFilter] = useState("");
+  const [nodes, setNodes] = useState<NodeRecord[]>([]);
+  const [nodePlacementId, setNodePlacementId] = useState("local");
+  const [nodePlacementRootPath, setNodePlacementRootPath] = useState("");
+  const [newNodeName, setNewNodeName] = useState("");
+  const [newNodeBaseUrl, setNewNodeBaseUrl] = useState("");
+  const [newNodeToken, setNewNodeToken] = useState("");
 
   const canManageUsers = currentUser?.role === "owner" || currentUser?.role === "admin";
   const canEditUsers = currentUser?.role === "owner";
@@ -379,6 +442,7 @@ export default function App() {
   const disableStop = serverActionBusy || !isOnline;
   const disableRestart = serverActionBusy || !isOnline;
   const addonsEnabled = !!activeServer && activeServer.type !== "vanilla";
+  const currentMetric = metrics[0] || DEFAULT_METRIC_SAMPLE;
   const addonsMode: "plugins" | "mods" | "none" =
     !activeServer || activeServer.type === "vanilla"
       ? "none"
@@ -538,6 +602,64 @@ export default function App() {
     setUsers(out.users);
     setUserRoleDraft(Object.fromEntries(out.users.map((u) => [u.id, u.role])));
   };
+  const loadNodes = async () => {
+    const out = await api.listNodes();
+    setNodes(out.nodes);
+  };
+  const loadBackups = async () => {
+    if (!selectedServerId) return;
+    setBackupsLoading(true);
+    try {
+      const out = await api.listBackups(selectedServerId);
+      setBackups(out.backups);
+    } finally {
+      setBackupsLoading(false);
+    }
+  };
+  const loadJobs = async () => {
+    if (!selectedServerId) return;
+    setJobsLoading(true);
+    try {
+      const out = await api.listJobs(selectedServerId);
+      setJobs(out.jobs);
+      setJobRuns(out.runs);
+    } finally {
+      setJobsLoading(false);
+    }
+  };
+  const loadNotifications = async () => {
+    setNotificationsLoading(true);
+    try {
+      const [listOut, prefOut] = await Promise.all([api.listNotifications(), api.getNotificationPreferences()]);
+      setNotifications(listOut.notifications);
+      setNotificationPrefs(prefOut.preferences);
+    } finally {
+      setNotificationsLoading(false);
+    }
+  };
+  const loadMetrics = async () => {
+    if (!selectedServerId || !activeServer?.nodeId) return;
+    setMetricsLoading(true);
+    try {
+      const out = await api.getServerMetrics(selectedServerId);
+      setMetrics(out.samples);
+    } finally {
+      setMetricsLoading(false);
+    }
+  };
+  const loadAudit = async () => {
+    setAuditLoading(true);
+    try {
+      const out = await api.listAuditEvents({
+        action: auditActionFilter || undefined,
+        result: auditResultFilter || undefined,
+        serverId: selectedServerId || undefined
+      });
+      setAuditEvents(out.events);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
   const loadServerAddonSummary = async (server: ServerProfile) => {
     setServerAddonLoadingId(server.id);
     try {
@@ -562,7 +684,7 @@ export default function App() {
     loadMe().then(async (ok) => {
       if (ok) {
         setNeedsBootstrap(false);
-        await Promise.all([loadTypes(), loadServers()]);
+        await Promise.all([loadTypes(), loadServers(), loadNodes()]);
         return;
       }
       const state = await api.authState();
@@ -612,7 +734,17 @@ export default function App() {
         loadMods().catch((e) => setMessage(e.message));
       }
     }
-    if (activeView === "settings") loadServerManagement().catch((e) => setMessage(e.message));
+    if (activeView === "backups") {
+      loadBackups().catch((e) => setMessage(e.message));
+      loadJobs().catch((e) => setMessage(e.message));
+    }
+    if (activeView === "notifications") loadNotifications().catch((e) => setMessage(e.message));
+    if (activeView === "console" || activeView === "metrics") loadMetrics().catch((e) => setMessage(e.message));
+    if (activeView === "audit") loadAudit().catch((e) => setMessage(e.message));
+    if (activeView === "settings") {
+      loadServerManagement().catch((e) => setMessage(e.message));
+      loadNodes().catch((e) => setMessage(e.message));
+    }
   }, [selectedServerId]);
 
   useEffect(() => {
@@ -649,8 +781,18 @@ export default function App() {
         loadMods().catch((e) => setMessage(e.message));
       }
     }
-    if (activeView === "settings" && selectedServerId) loadServerManagement().catch((e) => setMessage(e.message));
-  }, [activeView, currentUser?.role, selectedServerId, addonsEnabled, addonsMode]);
+    if (activeView === "backups" && selectedServerId) {
+      loadBackups().catch((e) => setMessage(e.message));
+      loadJobs().catch((e) => setMessage(e.message));
+    }
+    if (activeView === "notifications") loadNotifications().catch((e) => setMessage(e.message));
+    if ((activeView === "console" || activeView === "metrics") && selectedServerId) loadMetrics().catch((e) => setMessage(e.message));
+    if (activeView === "audit") loadAudit().catch((e) => setMessage(e.message));
+    if (activeView === "settings" && selectedServerId) {
+      loadServerManagement().catch((e) => setMessage(e.message));
+      loadNodes().catch((e) => setMessage(e.message));
+    }
+  }, [activeView, currentUser?.role, selectedServerId, addonsEnabled, addonsMode, auditActionFilter, auditResultFilter]);
 
   useEffect(() => {
     if (activeView === "plugins" && !addonsEnabled) {
@@ -661,6 +803,16 @@ export default function App() {
   useEffect(() => {
     setSelectedAddonKeys([]);
   }, [selectedServerId, addonsMode]);
+
+  useEffect(() => {
+    if (!activeServer) {
+      setNodePlacementId("local");
+      setNodePlacementRootPath("");
+      return;
+    }
+    setNodePlacementId(activeServer.nodeId || "local");
+    setNodePlacementRootPath(activeServer.rootPath || "");
+  }, [activeServer?.id, activeServer?.nodeId, activeServer?.rootPath]);
 
   useEffect(() => {
     if (activeView !== "console" || !selectedServerId) return;
@@ -680,6 +832,23 @@ export default function App() {
     tick().catch(() => void 0);
     return () => clearInterval(timer);
   }, [activeView, selectedServerId, consoleCursor]);
+
+  useEffect(() => {
+    if (!selectedServerId) return;
+    if (activeView !== "console" && activeView !== "metrics") return;
+    const tick = async () => {
+      try {
+        await loadMetrics();
+      } catch (error) {
+        setMessage((error as Error).message);
+      }
+    };
+    tick().catch(() => void 0);
+    const timer = setInterval(() => {
+      tick().catch(() => void 0);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [activeView, selectedServerId, activeServer?.nodeId]);
 
   useEffect(() => {
     if (!consoleAutoScroll || activeView !== "console") return;
@@ -787,7 +956,12 @@ export default function App() {
     const email = loginUsername.trim();
     if (!email.includes("@")) return setLoginError("Use email address to log in.");
     try {
-      await api.authLogin(email, loginPassword);
+      const out = await api.authLogin(email, loginPassword);
+      if (out.requiresTwoFactor && out.challengeId) {
+        setPendingTwoFactorChallengeId(out.challengeId);
+        setLoginTwoFactorCode("");
+        return;
+      }
       const shouldRememberEmail = rememberEmail;
       const shouldRememberPassword = rememberPassword;
       if (shouldRememberEmail) {
@@ -804,11 +978,39 @@ export default function App() {
       localStorage.setItem(STORAGE_KEY_REMEMBER_PASSWORD, shouldRememberPassword ? "1" : "0");
       localStorage.removeItem(STORAGE_KEY_REMEMBER_BOTH);
       await loadMe();
-      await Promise.all([loadTypes(), loadServers()]);
+      await Promise.all([loadTypes(), loadServers(), loadNodes()]);
       setActiveView(viewFromPath(window.location.pathname));
       setNeedsBootstrap(false);
       setNeedsRecoveryKeyRegeneration(false);
+      setPendingTwoFactorChallengeId("");
+      setLoginTwoFactorCode("");
     } catch (error) { setLoginError((error as Error).message); }
+  };
+
+  const doLoginTwoFactor = async () => {
+    setLoginError("");
+    if (!pendingTwoFactorChallengeId) return setLoginError("Two-factor challenge missing.");
+    try {
+      await api.authLoginTwoFactor(pendingTwoFactorChallengeId, loginTwoFactorCode);
+      const shouldRememberEmail = rememberEmail;
+      const shouldRememberPassword = rememberPassword;
+      if (shouldRememberEmail) localStorage.setItem(STORAGE_KEY_LOGIN_EMAIL, loginUsername.trim());
+      else localStorage.removeItem(STORAGE_KEY_LOGIN_EMAIL);
+      if (shouldRememberPassword) localStorage.setItem(STORAGE_KEY_LOGIN_PASSWORD, loginPassword);
+      else localStorage.removeItem(STORAGE_KEY_LOGIN_PASSWORD);
+      localStorage.setItem(STORAGE_KEY_REMEMBER_EMAIL, shouldRememberEmail ? "1" : "0");
+      localStorage.setItem(STORAGE_KEY_REMEMBER_PASSWORD, shouldRememberPassword ? "1" : "0");
+      localStorage.removeItem(STORAGE_KEY_REMEMBER_BOTH);
+      await loadMe();
+      await Promise.all([loadTypes(), loadServers(), loadNodes()]);
+      setActiveView(viewFromPath(window.location.pathname));
+      setNeedsBootstrap(false);
+      setNeedsRecoveryKeyRegeneration(false);
+      setPendingTwoFactorChallengeId("");
+      setLoginTwoFactorCode("");
+    } catch (error) {
+      setLoginError((error as Error).message);
+    }
   };
 
   const doForgotPassword = async () => {
@@ -853,7 +1055,7 @@ export default function App() {
       setNeedsBootstrap(false);
       setSetupRecoveryKeys([]);
       await loadMe();
-      await Promise.all([loadTypes(), loadServers()]);
+      await Promise.all([loadTypes(), loadServers(), loadNodes()]);
     }
   };
 
@@ -871,6 +1073,36 @@ export default function App() {
     setUserRoleDraft({});
     setShowSetupModal(false);
     setNeedsRecoveryKeyRegeneration(false);
+  };
+
+  const openTwoFactorManager = async () => {
+    setTwoFactorSetupCode("");
+    setTwoFactorDisableCode("");
+    setTwoFactorSetupSecret("");
+    setTwoFactorSetupQr("");
+    const out = await api.authTwoFactorState();
+    if (!out.enabled) {
+      const setup = await api.authTwoFactorSetup();
+      setTwoFactorSetupSecret(setup.secret);
+      setTwoFactorSetupQr(setup.qrCodeDataUrl);
+    }
+    setShowTwoFactorModal(true);
+  };
+
+  const enableTwoFactorNow = async () => {
+    const out = await api.authTwoFactorEnable(twoFactorSetupCode);
+    setCurrentUser(out.user);
+    setTwoFactorSetupCode("");
+    setShowTwoFactorModal(false);
+    setMessage("Two-factor authentication enabled.");
+  };
+
+  const disableTwoFactorNow = async () => {
+    const out = await api.authTwoFactorDisable(twoFactorDisableCode);
+    setCurrentUser(out.user);
+    setTwoFactorDisableCode("");
+    setShowTwoFactorModal(false);
+    setMessage("Two-factor authentication disabled.");
   };
   const installServerNow = async () => {
     await api.installServer({
@@ -1274,6 +1506,117 @@ export default function App() {
     if (window.location.pathname !== nextPath) window.history.pushState({}, "", nextPath);
   };
 
+  const createBackupNow = async () => {
+    if (!selectedServerId) return;
+    await api.createBackup(selectedServerId);
+    await loadBackups();
+  };
+
+  const restoreBackupNow = async (backup: BackupRecord) => {
+    if (!selectedServerId) return;
+    await api.restoreBackup(backup.id);
+    await loadBackups();
+    await loadFiles(".");
+  };
+
+  const deleteBackupNow = async (backup: BackupRecord) => {
+    await api.deleteBackup(backup.id);
+    await loadBackups();
+    await loadMetrics();
+  };
+
+  const createScheduledJobNow = async () => {
+    if (!selectedServerId) return;
+    await api.createJob({
+      serverId: selectedServerId,
+      name: newJobName || `${newJobKind} every ${newJobInterval} minutes`,
+      kind: newJobKind,
+      intervalMinutes: newJobInterval,
+      command: newJobKind === "command" ? newJobCommand : null
+    });
+    setNewJobName("");
+    setNewJobCommand("");
+    setNewJobInterval(60);
+    setNewJobKind("backup");
+    await loadJobs();
+  };
+
+  const toggleScheduledJob = async (job: ScheduledJob) => {
+    await api.updateJobConfig(job.id, { enabled: !job.enabled });
+    await loadJobs();
+  };
+
+  const runScheduledJobNow = async (job: ScheduledJob) => {
+    await api.runJobNow(job.id);
+    await loadJobs();
+    if (job.kind === "backup") await loadBackups();
+  };
+
+  const deleteScheduledJobNow = async (job: ScheduledJob) => {
+    await api.deleteJob(job.id);
+    await loadJobs();
+  };
+
+  const markNotificationAsRead = async (notification: NotificationRecord) => {
+    if (notification.readAt) return;
+    await api.markNotificationRead(notification.id);
+    await loadNotifications();
+  };
+
+  const saveNotificationPreferences = async () => {
+    if (!notificationPrefs) return;
+    const out = await api.updateNotificationPreferences({
+      inApp: notificationPrefs.inApp,
+      email: notificationPrefs.email,
+      webhook: notificationPrefs.webhook
+    });
+    setNotificationPrefs(out.preferences);
+    await loadNotifications();
+  };
+
+  const createNodeNow = async () => {
+    const name = newNodeName.trim();
+    const baseUrl = newNodeBaseUrl.trim();
+    if (!name) return setMessage("Node name is required.");
+    if (!baseUrl) return setMessage("Node base URL is required.");
+    await api.createNode({
+      name,
+      baseUrl,
+      authToken: newNodeToken.trim() || null
+    });
+    setNewNodeName("");
+    setNewNodeBaseUrl("");
+    setNewNodeToken("");
+    await loadNodes();
+  };
+
+  const testNodeNow = async (nodeId: string) => {
+    const out = await api.testNode(nodeId);
+    await loadNodes();
+    setMessage(out.ok ? "Node connection test succeeded." : "Node connection test failed.");
+  };
+
+  const deleteNodeNow = async (nodeId: string) => {
+    await api.deleteNode(nodeId);
+    if (nodePlacementId === nodeId) setNodePlacementId("local");
+    await loadNodes();
+  };
+
+  const saveServerLocationNow = async () => {
+    if (!activeServer) return;
+    const nextRootPath = nodePlacementRootPath.trim();
+    if (!nodePlacementId) return setMessage("Choose a node first.");
+    if (!nextRootPath) return setMessage("Server root path is required.");
+    const out = await api.updateServerLocation(activeServer.id, {
+      nodeId: nodePlacementId,
+      rootPath: nextRootPath
+    });
+    setNodePlacementId(out.server.nodeId || "local");
+    setNodePlacementRootPath(out.server.rootPath);
+    await Promise.all([loadServers(), loadNodes()]);
+    setMessage("Server location updated.");
+  };
+
   const groupedPropertyFields = (Object.keys(PROPERTY_CATEGORY_LABELS) as Array<ServerPropertyField["category"]>)
     .map((category) => ({
       category,
@@ -1303,9 +1646,10 @@ export default function App() {
             <section className="auth-panel login-panel">
               <h2 className="auth-title login-title">Log In</h2>
               {needsBootstrap && <div className="banner warn">No account exists yet. Run initial setup.</div>}
-              <div className="auth-form-stack"><label>Email</label><input type="email" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} placeholder="Email address" /><label>Password</label><div className="password-input-wrap"><input type={showLoginPassword ? "text" : "password"} value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLogin().catch((err) => setLoginError(err.message)); }} placeholder="Password" /><button type="button" className="password-toggle-btn" onClick={() => setShowLoginPassword((prev) => !prev)}>{showLoginPassword ? "Hide" : "Show"}</button></div><div className="remember-options remember-options-grid"><label className="remember-row"><input type="checkbox" checked={rememberEmail} onChange={(e) => { const next = e.target.checked; setRememberEmail(next); if (!next) { localStorage.removeItem(STORAGE_KEY_LOGIN_EMAIL); localStorage.setItem(STORAGE_KEY_REMEMBER_EMAIL, "0"); } }} />Remember email</label><button type="button" className="remember-row remember-action-row" onClick={() => { setForgotEmail(""); setForgotRecoveryKey(""); setForgotModalNotice(""); setForgotModalError(""); setShowForgotModal(true); }}><span className="remember-action-icon"><i className="fa-solid fa-key" aria-hidden="true" /></span><span>Forgot password</span></button><label className="remember-row"><input type="checkbox" checked={rememberPassword} onChange={(e) => { const next = e.target.checked; setRememberPassword(next); if (!next) { localStorage.removeItem(STORAGE_KEY_LOGIN_PASSWORD); localStorage.setItem(STORAGE_KEY_REMEMBER_PASSWORD, "0"); } }} />Remember password</label></div></div>
+              <div className="auth-form-stack"><label>Email</label><input type="email" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} placeholder="Email address" /><label>Password</label><div className="password-input-wrap"><input type={showLoginPassword ? "text" : "password"} value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLogin().catch((err) => setLoginError(err.message)); }} placeholder="Password" /><button type="button" className="password-toggle-btn" onClick={() => setShowLoginPassword((prev) => !prev)}>{showLoginPassword ? "Hide" : "Show"}</button></div>{!!pendingTwoFactorChallengeId && <><label>Authenticator Code</label><input value={loginTwoFactorCode} onChange={(e) => setLoginTwoFactorCode(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLoginTwoFactor().catch((err) => setLoginError(err.message)); }} placeholder="123456" /></>}<div className="remember-options remember-options-grid"><label className="remember-row"><input type="checkbox" checked={rememberEmail} onChange={(e) => { const next = e.target.checked; setRememberEmail(next); if (!next) { localStorage.removeItem(STORAGE_KEY_LOGIN_EMAIL); localStorage.setItem(STORAGE_KEY_REMEMBER_EMAIL, "0"); } }} />Remember email</label><button type="button" className="remember-row remember-action-row" onClick={() => { setForgotEmail(""); setForgotRecoveryKey(""); setForgotModalNotice(""); setForgotModalError(""); setShowForgotModal(true); }}><span className="remember-action-icon"><i className="fa-solid fa-key" aria-hidden="true" /></span><span>Forgot password</span></button><label className="remember-row"><input type="checkbox" checked={rememberPassword} onChange={(e) => { const next = e.target.checked; setRememberPassword(next); if (!next) { localStorage.removeItem(STORAGE_KEY_LOGIN_PASSWORD); localStorage.setItem(STORAGE_KEY_REMEMBER_PASSWORD, "0"); } }} />Remember password</label></div></div>
               {!!loginError && <div className="banner warn">{loginError}</div>}
-              <button className="auth-primary-btn" onClick={() => doLogin().catch((e) => setLoginError(e.message))}>Log In</button>
+              <button className="auth-primary-btn" onClick={() => (pendingTwoFactorChallengeId ? doLoginTwoFactor() : doLogin()).catch((e) => setLoginError(e.message))}>{pendingTwoFactorChallengeId ? "Verify Authenticator Code" : "Log In"}</button>
+              {!!pendingTwoFactorChallengeId && <button onClick={() => { setPendingTwoFactorChallengeId(""); setLoginTwoFactorCode(""); }}>Back to password</button>}
               {needsBootstrap && <button onClick={() => { setShowSetupModal(true); window.history.pushState({}, "", "/setup"); }}>Open Setup</button>}
             </section>
           )}
@@ -1356,6 +1700,7 @@ export default function App() {
               <button className="btn-stop" disabled={disableStop} onClick={() => runServerAction("stop").catch((e) => setMessage(e.message))}><i className="fa-solid fa-stop" aria-hidden="true" /> Stop</button>
               <button className="btn-restart" disabled={disableRestart} onClick={() => runServerAction("restart").catch((e) => setMessage(e.message))}><i className="fa-solid fa-rotate-right" aria-hidden="true" /> Restart</button>
             </>}
+            <button title="Two-Factor Authentication" onClick={() => openTwoFactorManager().catch((e) => setMessage(e.message))}><i className="fa-solid fa-shield-halved" aria-hidden="true" /> {currentUser?.twoFactorEnabled ? "2FA On" : "2FA"}</button>
             <button className="logout-btn-inline logout-icon-btn" title="Logout" aria-label="Logout" onClick={() => doLogout().catch((e) => setMessage(e.message))}><i className="fa-solid fa-right-from-bracket" aria-hidden="true" /></button>
           </div>
         </div>
@@ -1408,6 +1753,12 @@ export default function App() {
             {activeView === "console" && <>
               <h2>Console</h2>
               <div className="view-layout">
+                <div className="metrics-summary-grid console-metrics-grid">
+                  <div className="metric-card"><strong>CPU</strong><span>{currentMetric.cpuPercent.toFixed(1)}%</span></div>
+                  <div className="metric-card"><strong>Memory</strong><span>{currentMetric.memoryUsedMb.toFixed(0)} / {currentMetric.memoryTotalMb.toFixed(0)} MB</span></div>
+                  <div className="metric-card"><strong>Disk</strong><span>{currentMetric.diskUsedMb.toFixed(0)} / {currentMetric.diskTotalMb.toFixed(0)} MB</span></div>
+                  <div className="metric-card"><strong>Backups</strong><span>{currentMetric.backupStorageMb.toFixed(2)} MB</span></div>
+                </div>
                 <div className="console-panel">
                   <div className="console-toolbar">
                     <span className="muted">{consoleLoading ? "Updating..." : `Lines: ${consoleLines.length}`}</span>
@@ -1671,6 +2022,144 @@ export default function App() {
               </div>
             </>}
 
+            {activeView === "backups" && <>
+              <h2>Backups & Jobs</h2>
+              <div className="view-layout">
+                <div className="settings-layout">
+                  <div className="settings-card modern-settings-card">
+                    <div className="management-section">
+                      <div className="row wrap">
+                        <h3>Backups</h3>
+                        <button className="btn-start" disabled={!canOperateServer || !selectedServerId} onClick={() => createBackupNow().catch((e) => setMessage(e.message))}>
+                          <i className="fa-solid fa-box-archive" aria-hidden="true" /> Create Backup
+                        </button>
+                      </div>
+                      <div className="users-list users-table-wrap">
+                        {backupsLoading ? <div className="empty-list">Loading backups...</div> : !backups.length ? <div className="empty-list">No backups yet.</div> : (
+                          <table className="users-table">
+                            <thead><tr><th>Created</th><th>Type</th><th>Size</th><th>By</th><th>Actions</th></tr></thead>
+                            <tbody>
+                              {backups.map((backup) => (
+                                <tr key={backup.id}>
+                                  <td>{new Date(backup.createdAt).toLocaleString()}</td>
+                                  <td>{backup.kind}</td>
+                                  <td>{(backup.size / (1024 * 1024)).toFixed(2)} MB</td>
+                                  <td>{backup.createdBy}</td>
+                                  <td>
+                                    <div className="row wrap">
+                                      <a href={api.backupDownloadUrl(backup.id)} target="_blank" rel="noreferrer"><button>Download</button></a>
+                                      <button disabled={!canOperateServer} onClick={() => restoreBackupNow(backup).catch((e) => setMessage(e.message))}>Restore</button>
+                                      <button className="btn-danger" disabled={!canOperateServer} onClick={() => deleteBackupNow(backup).catch((e) => setMessage(e.message))}>Delete</button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    </div>
+                    <div className="management-section">
+                      <h3>Scheduled Jobs</h3>
+                      <div className="settings-grid">
+                        <label className="settings-field"><span>Name</span><input value={newJobName} onChange={(e) => setNewJobName(e.target.value)} placeholder="Nightly backup" /></label>
+                        <label className="settings-field"><span>Kind</span><select value={newJobKind} onChange={(e) => setNewJobKind(e.target.value as ScheduledJob["kind"])}><option value="backup">backup</option><option value="start">start</option><option value="stop">stop</option><option value="restart">restart</option><option value="command">command</option></select></label>
+                        <label className="settings-field"><span>Interval (minutes)</span><input type="number" min={1} value={newJobInterval} onChange={(e) => setNewJobInterval(Math.max(1, Number(e.target.value || 1)))} /></label>
+                        {newJobKind === "command" && <label className="settings-field settings-field-wide"><span>Command</span><input value={newJobCommand} onChange={(e) => setNewJobCommand(e.target.value)} placeholder="say Scheduled task started" /></label>}
+                      </div>
+                      <div className="row"><button className="btn-start" disabled={!canOperateServer || !selectedServerId} onClick={() => createScheduledJobNow().catch((e) => setMessage(e.message))}>Save Job</button></div>
+                      <div className="users-list users-table-wrap">
+                        {jobsLoading ? <div className="empty-list">Loading jobs...</div> : !jobs.length ? <div className="empty-list">No scheduled jobs yet.</div> : (
+                          <table className="users-table">
+                            <thead><tr><th>Name</th><th>Kind</th><th>Every</th><th>Next run</th><th>Actions</th></tr></thead>
+                            <tbody>{jobs.map((job) => <tr key={job.id}><td>{job.name}</td><td>{job.kind}</td><td>{job.intervalMinutes} min</td><td>{job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : "-"}</td><td><div className="row wrap"><button onClick={() => toggleScheduledJob(job).catch((e) => setMessage(e.message))}>{job.enabled ? "Disable" : "Enable"}</button><button onClick={() => runScheduledJobNow(job).catch((e) => setMessage(e.message))}>Run Now</button><button className="btn-danger" onClick={() => deleteScheduledJobNow(job).catch((e) => setMessage(e.message))}>Delete</button></div></td></tr>)}</tbody>
+                          </table>
+                        )}
+                      </div>
+                      {!!jobRuns.length && <div className="users-list users-table-wrap"><table className="users-table"><thead><tr><th>Started</th><th>Kind</th><th>Status</th><th>Message</th></tr></thead><tbody>{jobRuns.slice(0, 10).map((run) => <tr key={run.id}><td>{new Date(run.startedAt).toLocaleString()}</td><td>{run.kind}</td><td>{run.status}</td><td>{run.message || "-"}</td></tr>)}</tbody></table></div>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>}
+
+            {activeView === "notifications" && <>
+              <h2>Notifications</h2>
+              <div className="view-layout">
+                <div className="settings-layout">
+                  <div className="settings-card modern-settings-card">
+                    <div className="management-section">
+                      <h3>Preferences</h3>
+                      {notificationPrefs && <div className="settings-grid">
+                        <label className="settings-field"><span>In-App</span><select value={notificationPrefs.inApp ? "true" : "false"} onChange={(e) => setNotificationPrefs((prev) => prev ? { ...prev, inApp: e.target.value === "true" } : prev)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+                        <label className="settings-field"><span>Email</span><select value={notificationPrefs.email ? "true" : "false"} onChange={(e) => setNotificationPrefs((prev) => prev ? { ...prev, email: e.target.value === "true" } : prev)}><option value="false">Disabled</option><option value="true">Enabled</option></select></label>
+                        <label className="settings-field"><span>Webhook</span><select value={notificationPrefs.webhook ? "true" : "false"} onChange={(e) => setNotificationPrefs((prev) => prev ? { ...prev, webhook: e.target.value === "true" } : prev)}><option value="false">Disabled</option><option value="true">Enabled</option></select></label>
+                      </div>}
+                      <div className="row"><button className="btn-start" onClick={() => saveNotificationPreferences().catch((e) => setMessage(e.message))}>Save Preferences</button></div>
+                    </div>
+                    <div className="management-section">
+                      <h3>Inbox</h3>
+                      <div className="users-list users-table-wrap">
+                        {notificationsLoading ? <div className="empty-list">Loading notifications...</div> : !notifications.length ? <div className="empty-list">No notifications yet.</div> : (
+                          <table className="users-table">
+                            <thead><tr><th>When</th><th>Severity</th><th>Title</th><th>Message</th><th>Actions</th></tr></thead>
+                            <tbody>{notifications.map((notification) => <tr key={notification.id} className={notification.readAt ? "" : "table-row-highlight"}><td>{new Date(notification.createdAt).toLocaleString()}</td><td>{notification.severity}</td><td>{notification.title}</td><td>{notification.body}</td><td><button disabled={!!notification.readAt} onClick={() => markNotificationAsRead(notification).catch((e) => setMessage(e.message))}>{notification.readAt ? "Read" : "Mark Read"}</button></td></tr>)}</tbody>
+                          </table>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>}
+
+            {activeView === "metrics" && <>
+              <h2>Metrics</h2>
+              <div className="view-layout">
+                <div className="settings-layout">
+                  <div className="settings-card modern-settings-card">
+                    {metricsLoading ? <div className="empty-list">Loading metrics...</div> : !metrics.length ? <div className="empty-list">No metrics collected yet.</div> : <>
+                      <div className="metrics-summary-grid">
+                        <div className="metric-card"><strong>CPU</strong><span>{currentMetric.cpuPercent.toFixed(1)}%</span></div>
+                        <div className="metric-card"><strong>Memory</strong><span>{currentMetric.memoryUsedMb.toFixed(0)} / {currentMetric.memoryTotalMb.toFixed(0)} MB</span></div>
+                        <div className="metric-card"><strong>Disk</strong><span>{currentMetric.diskUsedMb.toFixed(0)} / {currentMetric.diskTotalMb.toFixed(0)} MB</span></div>
+                        <div className="metric-card"><strong>Backups</strong><span>{currentMetric.backupStorageMb.toFixed(2)} MB</span></div>
+                      </div>
+                      <div className="users-list users-table-wrap">
+                        <table className="users-table">
+                          <thead><tr><th>Captured</th><th>CPU %</th><th>Memory</th><th>Disk</th><th>Uptime</th><th>Failures</th></tr></thead>
+                          <tbody>{metrics.map((sample) => <tr key={sample.id}><td>{new Date(sample.createdAt).toLocaleString()}</td><td>{sample.cpuPercent.toFixed(1)}</td><td>{sample.memoryUsedMb.toFixed(0)} / {sample.memoryTotalMb.toFixed(0)} MB</td><td>{sample.diskUsedMb.toFixed(0)} / {sample.diskTotalMb.toFixed(0)} MB</td><td>{formatUptime(sample.uptimeMs)}</td><td>{sample.recentJobFailures}</td></tr>)}</tbody>
+                        </table>
+                      </div>
+                    </>}
+                  </div>
+                </div>
+              </div>
+            </>}
+
+            {activeView === "audit" && canManageUsers && <>
+              <h2>Audit Events</h2>
+              <div className="view-layout">
+                <div className="settings-layout">
+                  <div className="settings-card modern-settings-card">
+                    <div className="settings-grid">
+                      <label className="settings-field"><span>Action Filter</span><input value={auditActionFilter} onChange={(e) => setAuditActionFilter(e.target.value)} placeholder="server.start" /></label>
+                      <label className="settings-field"><span>Result</span><select value={auditResultFilter} onChange={(e) => setAuditResultFilter(e.target.value)}><option value="">All</option><option value="ok">ok</option><option value="error">error</option></select></label>
+                    </div>
+                    <div className="row"><button onClick={() => loadAudit().catch((e) => setMessage(e.message))}>Refresh</button></div>
+                    <div className="users-list users-table-wrap">
+                      {auditLoading ? <div className="empty-list">Loading audit events...</div> : !auditEvents.length ? <div className="empty-list">No audit events found.</div> : (
+                        <table className="users-table">
+                          <thead><tr><th>When</th><th>Action</th><th>Actor</th><th>Result</th><th>Details</th></tr></thead>
+                          <tbody>{auditEvents.map((event) => <tr key={event.id}><td>{new Date(event.at).toLocaleString()}</td><td>{event.action}</td><td>{event.actor}</td><td>{event.result}</td><td><code>{JSON.stringify(event.details)}</code></td></tr>)}</tbody>
+                        </table>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>}
+
             {activeView === "settings" && <>
               <h2>Server Management</h2>
               <div className="view-layout">
@@ -1679,6 +2168,103 @@ export default function App() {
                 ) : (
                   <div className="settings-layout">
                     <div className="settings-card modern-settings-card">
+                      <div className="management-section">
+                        <h3>Node Placement</h3>
+                        <p className="muted">Assign this server to the local machine or to a registered remote agent node.</p>
+                        <div className="settings-grid">
+                          <label className="settings-field">
+                            <span>Assigned Node</span>
+                            <select value={nodePlacementId} onChange={(e) => setNodePlacementId(e.target.value)} disabled={!canOperateServer}>
+                              {nodes.map((node) => (
+                                <option key={node.id} value={node.id}>
+                                  {node.name} ({node.kind}, {node.status})
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="settings-field settings-field-wide">
+                            <span>Server Root Path On Node</span>
+                            <input
+                              value={nodePlacementRootPath}
+                              onChange={(e) => setNodePlacementRootPath(e.target.value)}
+                              placeholder="Absolute path on the selected host"
+                              disabled={!canOperateServer}
+                            />
+                          </label>
+                        </div>
+                        <div className="row wrap">
+                          <button onClick={() => loadNodes().catch((e) => setMessage(e.message))}>Refresh Nodes</button>
+                          <button className="btn-start" disabled={!canOperateServer} onClick={() => saveServerLocationNow().catch((e) => setMessage(e.message))}>
+                            Save Node Placement
+                          </button>
+                        </div>
+                      </div>
+
+                      {canManageUsers && (
+                        <div className="management-section">
+                          <h3>Remote Nodes</h3>
+                          <p className="muted">Register agent nodes here, then point servers at their base URL and auth token.</p>
+                          <div className="settings-grid">
+                            <label className="settings-field">
+                              <span>Node Name</span>
+                              <input value={newNodeName} onChange={(e) => setNewNodeName(e.target.value)} placeholder="Office Linux host" />
+                            </label>
+                            <label className="settings-field">
+                              <span>Agent Base URL</span>
+                              <input value={newNodeBaseUrl} onChange={(e) => setNewNodeBaseUrl(e.target.value)} placeholder="https://node-a.example.com:4300" />
+                            </label>
+                            <label className="settings-field settings-field-wide">
+                              <span>Agent Auth Token</span>
+                              <input value={newNodeToken} onChange={(e) => setNewNodeToken(e.target.value)} placeholder="Paste the shared agent token" />
+                            </label>
+                          </div>
+                          <div className="row wrap">
+                            <button className="btn-start" onClick={() => createNodeNow().catch((e) => setMessage(e.message))}>Register Node</button>
+                            <button onClick={() => loadNodes().catch((e) => setMessage(e.message))}>Reload Node List</button>
+                          </div>
+                          <div className="users-list users-table-wrap">
+                            {!nodes.length ? (
+                              <div className="empty-list">No nodes registered yet.</div>
+                            ) : (
+                              <table className="users-table">
+                                <thead>
+                                  <tr>
+                                    <th>Name</th>
+                                    <th>Type</th>
+                                    <th>Status</th>
+                                    <th>Base URL</th>
+                                    <th>Heartbeat</th>
+                                    <th>Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {nodes.map((node) => (
+                                    <tr key={node.id}>
+                                      <td>{node.name}</td>
+                                      <td>{node.kind}</td>
+                                      <td>{node.status}</td>
+                                      <td><code>{node.baseUrl || node.host}</code></td>
+                                      <td>{node.lastHeartbeatAt ? new Date(node.lastHeartbeatAt).toLocaleString() : "never"}</td>
+                                      <td>
+                                        <div className="row wrap">
+                                          {node.kind === "agent" && (
+                                            <>
+                                              <button onClick={() => testNodeNow(node.id).catch((e) => setMessage(e.message))}>Test</button>
+                                              <button className="btn-danger" onClick={() => deleteNodeNow(node.id).catch((e) => setMessage(e.message))}>Remove</button>
+                                            </>
+                                          )}
+                                          {node.kind === "local" && <span className="muted">Built-in local node</span>}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="management-section">
                         <h3>EULA</h3>
                         <div className="eula-card">
@@ -2018,7 +2604,7 @@ export default function App() {
           </div>
         )}
 
-        {showMenuDrawer && <div className="menu-drawer-backdrop" onClick={() => setShowMenuDrawer(false)}><aside className="menu-drawer" onClick={(e) => e.stopPropagation()}><div className="menu-drawer-header"><h3>MC Control Panel</h3><button className="menu-toggle-btn" onClick={() => setShowMenuDrawer(false)}><img src="/minecraft-icon.png" alt="Toggle menu" className="menu-toggle-logo" /></button></div><nav className="menu-drawer-nav"><button className={activeView === "console" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("console"); setShowMenuDrawer(false); }}>Console</button><button className={activeView === "players" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("players"); setShowMenuDrawer(false); }}>Players</button><button className={activeView === "files" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("files"); setShowMenuDrawer(false); }}>Files</button><button disabled={!addonsEnabled} title={!addonsEnabled ? "Disabled for vanilla servers" : "Plugins/Mods"} className={activeView === "plugins" ? "menu-btn active" : "menu-btn"} onClick={() => { if (!addonsEnabled) return; goToView("plugins"); setShowMenuDrawer(false); }}>Plugins/Mods</button><button className={activeView === "settings" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("settings"); setShowMenuDrawer(false); }}>Server Management</button>{canManageUsers && <button className={activeView === "users" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("users"); setShowMenuDrawer(false); }}>Users</button>}</nav></aside></div>}
+        {showMenuDrawer && <div className="menu-drawer-backdrop" onClick={() => setShowMenuDrawer(false)}><aside className="menu-drawer" onClick={(e) => e.stopPropagation()}><div className="menu-drawer-header"><h3>MC Control Panel</h3><button className="menu-toggle-btn" onClick={() => setShowMenuDrawer(false)}><img src="/minecraft-icon.png" alt="Toggle menu" className="menu-toggle-logo" /></button></div><nav className="menu-drawer-nav"><button className={activeView === "console" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("console"); setShowMenuDrawer(false); }}>Console</button><button className={activeView === "players" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("players"); setShowMenuDrawer(false); }}>Players</button><button className={activeView === "files" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("files"); setShowMenuDrawer(false); }}>Files</button><button disabled={!addonsEnabled} title={!addonsEnabled ? "Disabled for vanilla servers" : "Plugins/Mods"} className={activeView === "plugins" ? "menu-btn active" : "menu-btn"} onClick={() => { if (!addonsEnabled) return; goToView("plugins"); setShowMenuDrawer(false); }}>Plugins/Mods</button><button className={activeView === "backups" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("backups"); setShowMenuDrawer(false); }}>Backups & Jobs</button><button className={activeView === "notifications" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("notifications"); setShowMenuDrawer(false); }}>Notifications</button><button className={activeView === "metrics" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("metrics"); setShowMenuDrawer(false); }}>Metrics</button><button className={activeView === "settings" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("settings"); setShowMenuDrawer(false); }}>Server Management</button>{canManageUsers && <button className={activeView === "audit" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("audit"); setShowMenuDrawer(false); }}>Audit</button>}{canManageUsers && <button className={activeView === "users" ? "menu-btn active" : "menu-btn"} onClick={() => { goToView("users"); setShowMenuDrawer(false); }}>Users</button>}</nav></aside></div>}
 
         {showDeleteModal && serverToDelete && <div className="modal-backdrop" onClick={() => setShowDeleteModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><ModalCloseButton onClick={() => setShowDeleteModal(false)} /><h3>Delete Server</h3><p>Delete <strong>{serverToDelete.name}</strong>? This cannot be undone.</p><div className="row"><button onClick={() => setShowDeleteModal(false)}>Cancel</button><button className="btn-danger" onClick={() => deleteServerNow().catch((e) => setMessage(e.message))}>Delete</button></div></div></div>}
 
@@ -2177,6 +2763,8 @@ export default function App() {
         )}
 
         {showConfigEditor && configEditor && <div className="modal-backdrop" onClick={() => closeConfigEditor()}><div className="modal-card config-editor-modal" onClick={(e) => e.stopPropagation()}><ModalCloseButton onClick={() => closeConfigEditor()} /><h3>Config Editor</h3><div className="muted">{configEditor.path}</div><div className="config-editor-monaco"><Editor height="55dvh" language={configLanguage(configEditor.path)} theme="vs-dark" value={configEditor.content} onChange={(value) => setConfigEditor({ ...configEditor, content: value ?? "" })} options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: "on", automaticLayout: true }} /></div>{!!configEditorError && <div className="banner warn">{configEditorError}</div>}<div className="row"><button onClick={() => closeConfigEditor()}>Cancel</button><button className="btn-start" onClick={() => saveConfigEditor().catch((e) => setConfigEditorError(e.message))}>Save</button></div></div></div>}
+
+        {showTwoFactorModal && <div className="modal-backdrop" onClick={() => setShowTwoFactorModal(false)}><div className="modal-card" onClick={(e) => e.stopPropagation()}><ModalCloseButton onClick={() => setShowTwoFactorModal(false)} /><h3>Two-Factor Authentication</h3>{currentUser?.twoFactorEnabled ? <><p className="muted">Two-factor authentication is currently enabled for your account.</p><input value={twoFactorDisableCode} onChange={(e) => setTwoFactorDisableCode(e.target.value)} placeholder="Enter authenticator code to disable" /><div className="row"><button onClick={() => setShowTwoFactorModal(false)}>Cancel</button><button className="btn-danger" onClick={() => disableTwoFactorNow().catch((e) => setMessage(e.message))}>Disable 2FA</button></div></> : <><p className="muted">Scan the QR code in an authenticator app or enter the setup code manually, then verify with the 6-digit code.</p>{!!twoFactorSetupQr && <img src={twoFactorSetupQr} alt="Two-factor QR code" className="two-factor-qr" />}{!!twoFactorSetupSecret && <textarea readOnly rows={3} value={twoFactorSetupSecret} />}<input value={twoFactorSetupCode} onChange={(e) => setTwoFactorSetupCode(e.target.value)} placeholder="Enter 6-digit authenticator code" /><div className="row"><button onClick={() => setShowTwoFactorModal(false)}>Cancel</button><button className="btn-start" onClick={() => enableTwoFactorNow().catch((e) => setMessage(e.message))}>Enable 2FA</button></div></>}</div></div>}
 
         {currentUser?.mustChangePassword && <div className="modal-backdrop" onClick={(e) => e.stopPropagation()}><div className="modal-card" onClick={(e) => e.stopPropagation()}><ModalCloseButton onClick={() => doLogout().catch((e) => setForcePasswordError(e.message))} /><h3>Set New Password</h3><p>You logged in with a temporary password. Set a new password to continue.</p>{needsRecoveryKeyRegeneration && <div className="banner info">You have 1 or fewer recovery keys left. Regenerate 10 new keys after setting your password.</div>}<div className="password-input-wrap"><input type={showForcePassword ? "text" : "password"} value={forcePassword} onChange={(e) => setForcePassword(e.target.value)} placeholder="New password" /><button type="button" className="password-toggle-btn" onClick={() => setShowForcePassword((prev) => !prev)}>{showForcePassword ? "Hide" : "Show"}</button></div><div className="password-input-wrap"><input type={showForcePasswordConfirm ? "text" : "password"} value={forcePasswordConfirm} onChange={(e) => setForcePasswordConfirm(e.target.value)} placeholder="Confirm password" /><button type="button" className="password-toggle-btn" onClick={() => setShowForcePasswordConfirm((prev) => !prev)}>{showForcePasswordConfirm ? "Hide" : "Show"}</button></div>{!!forcePasswordError && <div className="banner warn">{forcePasswordError}</div>}<div className="row"><button className="btn-start" onClick={() => setForcedPasswordNow().catch((e) => setForcePasswordError(e.message))}>Set</button>{needsRecoveryKeyRegeneration && <button onClick={() => regenerateRecoveryKeysNow().catch((e) => setForcePasswordError(e.message))}>Regenerate Keys</button>}</div></div></div>}
 

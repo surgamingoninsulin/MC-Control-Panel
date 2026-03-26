@@ -1,0 +1,14 @@
+[Unit]
+Description=MC Control Panel
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mc-control-panel/Web-interface
+ExecStart=/usr/bin/npm --workspace server run start
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

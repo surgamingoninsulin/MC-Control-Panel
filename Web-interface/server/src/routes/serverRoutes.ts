@@ -10,7 +10,9 @@ export const createServerRoutes = (ctx: AppContext): Router => {
     try {
       const serverId = readServerId(req);
       const server = ctx.servers.requireById(serverId);
-      res.json({ ...ctx.runtime.getStatus(serverId), serverId, serverName: server.name });
+      Promise.resolve(ctx.nodeExec.getStatus(server))
+        .then((status) => res.json({ ...status, serverId, serverName: server.name }))
+        .catch((error) => res.status(400).json({ error: (error as Error).message }));
     } catch (error) {
       res.status(400).json({ error: (error as Error).message });
     }
@@ -29,7 +31,7 @@ export const createServerRoutes = (ctx: AppContext): Router => {
         });
         return res.json({ kind: "eula_required", eula });
       }
-      const status = ctx.runtime.start(serverId, server.rootPath);
+      const status = await ctx.nodeExec.start(server);
       ctx.audit.write({ action: "server.start", actor: "local-admin" });
       return res.json({ kind: "started", status: { ...status, serverId, serverName: server.name } });
     } catch (error) {
@@ -193,7 +195,7 @@ export const createServerRoutes = (ctx: AppContext): Router => {
       const serverId = readServerId(req);
       const server = ctx.servers.requireById(serverId);
       await ctx.admin.setEula(server.rootPath, true);
-      const status = ctx.runtime.start(serverId, server.rootPath);
+      const status = await ctx.nodeExec.start(server);
       ctx.audit.write({ action: "server.start", actor: "local-admin" });
       return res.json({ kind: "started", status: { ...status, serverId, serverName: server.name } });
     } catch (error) {
@@ -201,10 +203,11 @@ export const createServerRoutes = (ctx: AppContext): Router => {
     }
   });
 
-  router.post("/stop", requireRole(["owner", "admin"]), (req, res) => {
+  router.post("/stop", requireRole(["owner", "admin"]), async (req, res) => {
     try {
       const serverId = readServerId(req);
-      const status = ctx.runtime.stop(serverId);
+      const server = ctx.servers.requireById(serverId);
+      const status = await ctx.nodeExec.stop(server);
       ctx.audit.write({ action: "server.stop", actor: "local-admin" });
       res.json({ ...status, serverId });
     } catch (error) {
@@ -212,11 +215,11 @@ export const createServerRoutes = (ctx: AppContext): Router => {
     }
   });
 
-  router.post("/restart", requireRole(["owner", "admin"]), (req, res) => {
+  router.post("/restart", requireRole(["owner", "admin"]), async (req, res) => {
     try {
       const serverId = readServerId(req);
       const server = ctx.servers.requireById(serverId);
-      const status = ctx.runtime.restart(serverId, server.rootPath);
+      const status = await ctx.nodeExec.restart(server);
       ctx.audit.write({ action: "server.restart", actor: "local-admin" });
       res.json({ ...status, serverId, serverName: server.name });
     } catch (error) {
@@ -224,12 +227,13 @@ export const createServerRoutes = (ctx: AppContext): Router => {
     }
   });
 
-  router.post("/command", requireRole(["owner", "admin"]), (req, res) => {
+  router.post("/command", requireRole(["owner", "admin"]), async (req, res) => {
     try {
       const command = String(req.body?.command || "");
       if (!command.trim()) return res.status(400).json({ error: "command is required" });
       const serverId = readServerId(req);
-      ctx.runtime.sendCommand(serverId, command);
+      const server = ctx.servers.requireById(serverId);
+      await ctx.nodeExec.sendCommand(server, command);
       ctx.audit.write({
         action: "server.command",
         actor: "local-admin",

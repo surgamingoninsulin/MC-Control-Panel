@@ -11,6 +11,8 @@ export type ServerRecord = {
   nameKey: string;
   type: ServerType;
   version: string;
+  nodeId: string;
+  runtimeMode: "process" | "docker";
   rootPath: string;
   createdAt: string;
   updatedAt: string;
@@ -92,6 +94,8 @@ export class ServerRegistryService {
       nameKey,
       type: input.type,
       version: input.version,
+      nodeId: "local",
+      runtimeMode: "process",
       rootPath,
       createdAt: ts,
       updatedAt: ts
@@ -103,7 +107,7 @@ export class ServerRegistryService {
     return record;
   }
 
-  update(id: string, patch: Partial<Pick<ServerRecord, "name" | "type" | "version">>): ServerRecord {
+  update(id: string, patch: Partial<Pick<ServerRecord, "name" | "type" | "version" | "nodeId" | "runtimeMode" | "rootPath">>): ServerRecord {
     const current = this.requireById(id);
     const nextName = (patch.name ?? current.name).trim();
     const nextNameKey = normalizeNameKey(nextName);
@@ -115,9 +119,11 @@ export class ServerRegistryService {
     }
 
     const nextRootPath =
-      nextNameKey !== current.nameKey
-        ? path.resolve(appConfig.serversRoot, nextName)
-        : current.rootPath;
+      typeof patch.rootPath === "string" && patch.rootPath.trim()
+        ? path.resolve(patch.rootPath.trim())
+        : nextNameKey !== current.nameKey
+          ? path.resolve(appConfig.serversRoot, nextName)
+          : current.rootPath;
     if (nextRootPath !== current.rootPath) {
       fs.mkdirSync(path.dirname(nextRootPath), { recursive: true });
       if (fs.existsSync(current.rootPath)) {
@@ -133,6 +139,8 @@ export class ServerRegistryService {
       nameKey: nextNameKey,
       type: patch.type ?? current.type,
       version: patch.version ?? current.version,
+      nodeId: patch.nodeId ?? current.nodeId,
+      runtimeMode: patch.runtimeMode ?? current.runtimeMode,
       rootPath: nextRootPath,
       updatedAt: nowIso()
     };
@@ -238,7 +246,13 @@ export class ServerRegistryService {
       const raw = fs.readFileSync(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as RegistryData;
       if (!Array.isArray(parsed.servers)) return { servers: [] };
-      return { servers: parsed.servers };
+      return {
+        servers: parsed.servers.map((server) => ({
+          ...server,
+          nodeId: server.nodeId || "local",
+          runtimeMode: server.runtimeMode || "process"
+        }))
+      };
     } catch {
       return { servers: [] };
     }

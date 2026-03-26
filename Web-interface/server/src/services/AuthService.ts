@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { appConfig } from "../config.js";
+import { buildOtpAuthUrl, generateTwoFactorSecret, verifyTotp } from "../utils/twoFactor.js";
 
 export type UserRole = "owner" | "admin" | "viewer";
 
@@ -21,6 +22,9 @@ export type UserRecord = {
   devPasswordExpiresAt: string | null;
   resetTokenHash: string | null;
   resetTokenExpiresAt: string | null;
+  twoFactorEnabled: boolean;
+  twoFactorSecret: string | null;
+  pendingTwoFactorSecret: string | null;
   recoveryKeys: Array<{ hash: string; createdAt: string; usedAt: string | null }>;
   createdAt: string;
   updatedAt: string;
@@ -38,6 +42,7 @@ export type SessionRecord = {
 };
 
 type UserStore = { users: UserRecord[] };
+type LoginChallenge = { id: string; userId: string; createdAt: string; expiresAt: string };
 
 const SESSION_MS = 1000 * 60 * 60 * 24 * 7;
 const TEMP_PASSWORD_MS = 1000 * 60 * 60;
@@ -45,6 +50,7 @@ const DEV_PASSWORD_MS = 1000 * 30;
 const RESET_REISSUE_GUARD_MS = 1000 * 45;
 const RECOVERY_KEY_COUNT = 10;
 const RECOVERY_REGENERATE_THRESHOLD = 1;
+const TWO_FACTOR_CHALLENGE_MS = 1000 * 60 * 5;
 
 const nowIso = (): string => new Date().toISOString();
 const normalize = (value: string): string => value.trim().toLowerCase();
@@ -87,6 +93,7 @@ export class AuthService {
   private readonly resetMailLogPath: string;
   private store: UserStore = { users: [] };
   private readonly sessions = new Map<string, SessionRecord>();
+  private readonly loginChallenges = new Map<string, LoginChallenge>();
 
   constructor() {
     fs.mkdirSync(appConfig.panelDataDir, { recursive: true });
@@ -103,6 +110,11 @@ export class AuthService {
 
   listUsers(): SafeUser[] {
     return this.store.users.map((entry) => this.toSafeUser(entry));
+  }
+
+  getUserById(id: string): SafeUser | null {
+    const user = this.store.users.find((entry) => entry.id === id && entry.active);
+    return user ? this.toSafeUser(user) : null;
   }
 
   hasUsers(): boolean {
@@ -122,7 +134,7 @@ export class AuthService {
     return this.toSafeUser(user);
   }
 
-  login(email: string, password: string): { sessionId: string; user: SafeUser } {
+  login(email: string, password: string): { kind: "ok"; sessionId: string; user: SafeUser } | { kind: "2fa_required"; challengeId: string } {
     const key = normalize(email);
     const candidatePassword = String(password || "").trim();
     if (!isEmail(key)) throw new Error("Use email address to log in.");
@@ -154,6 +166,33 @@ export class AuthService {
         throw new Error("Temporary password expired. Request a new password email.");
       }
     }
+    if (user.twoFactorEnabled && user.twoFactorSecret) {
+      const challengeId = crypto.randomUUID();
+      const createdAt = nowIso();
+      const expiresAt = new Date(Date.now() + TWO_FACTOR_CHALLENGE_MS).toISOString();
+      this.loginChallenges.set(challengeId, { id: challengeId, userId: user.id, createdAt, expiresAt });
+      return { kind: "2fa_required", challengeId };
+    }
+    const sessionId = crypto.randomUUID();
+    const createdAt = nowIso();
+    const expiresAt = new Date(Date.now() + SESSION_MS).toISOString();
+    this.sessions.set(sessionId, { id: sessionId, userId: user.id, createdAt, expiresAt });
+    return { kind: "ok", sessionId, user: this.toSafeUser(user) };
+  }
+
+  completeTwoFactorLogin(challengeId: string, code: string): { sessionId: string; user: SafeUser } {
+    const challenge = this.loginChallenges.get(challengeId);
+    if (!challenge) throw new Error("Two-factor challenge not found.");
+    if (new Date(challenge.expiresAt).getTime() < Date.now()) {
+      this.loginChallenges.delete(challengeId);
+      throw new Error("Two-factor challenge expired.");
+    }
+    const user = this.store.users.find((entry) => entry.id === challenge.userId && entry.active);
+    if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
+      throw new Error("Two-factor authentication is not available for this account.");
+    }
+    if (!verifyTotp(user.twoFactorSecret, code)) throw new Error("Invalid authenticator code.");
+    this.loginChallenges.delete(challengeId);
     const sessionId = crypto.randomUUID();
     const createdAt = nowIso();
     const expiresAt = new Date(Date.now() + SESSION_MS).toISOString();
@@ -212,6 +251,9 @@ export class AuthService {
       devPasswordExpiresAt: null,
       resetTokenHash: null,
       resetTokenExpiresAt: null,
+      twoFactorEnabled: false,
+      twoFactorSecret: null,
+      pendingTwoFactorSecret: null,
       recoveryKeys: [],
       createdAt: ts,
       updatedAt: ts
@@ -279,6 +321,45 @@ export class AuthService {
     user.devPasswordExpiresAt = null;
     user.resetTokenHash = null;
     user.resetTokenExpiresAt = null;
+    user.updatedAt = nowIso();
+    this.persist();
+    return this.toSafeUser(user);
+  }
+
+  beginTwoFactorSetup(userId: string): { secret: string; otpAuthUrl: string } {
+    const user = this.store.users.find((entry) => entry.id === userId);
+    if (!user) throw new Error("User not found.");
+    const secret = generateTwoFactorSecret();
+    user.pendingTwoFactorSecret = secret;
+    user.updatedAt = nowIso();
+    this.persist();
+    return {
+      secret,
+      otpAuthUrl: buildOtpAuthUrl(user.email || user.username, secret)
+    };
+  }
+
+  enableTwoFactor(userId: string, code: string): SafeUser {
+    const user = this.store.users.find((entry) => entry.id === userId);
+    if (!user) throw new Error("User not found.");
+    if (!user.pendingTwoFactorSecret) throw new Error("Start two-factor setup first.");
+    if (!verifyTotp(user.pendingTwoFactorSecret, code)) throw new Error("Invalid authenticator code.");
+    user.twoFactorSecret = user.pendingTwoFactorSecret;
+    user.pendingTwoFactorSecret = null;
+    user.twoFactorEnabled = true;
+    user.updatedAt = nowIso();
+    this.persist();
+    return this.toSafeUser(user);
+  }
+
+  disableTwoFactor(userId: string, code: string): SafeUser {
+    const user = this.store.users.find((entry) => entry.id === userId);
+    if (!user) throw new Error("User not found.");
+    if (!user.twoFactorEnabled || !user.twoFactorSecret) throw new Error("Two-factor authentication is not enabled.");
+    if (!verifyTotp(user.twoFactorSecret, code)) throw new Error("Invalid authenticator code.");
+    user.twoFactorEnabled = false;
+    user.twoFactorSecret = null;
+    user.pendingTwoFactorSecret = null;
     user.updatedAt = nowIso();
     this.persist();
     return this.toSafeUser(user);
@@ -518,6 +599,9 @@ export class AuthService {
             devPasswordExpiresAt: user.devPasswordExpiresAt ? String(user.devPasswordExpiresAt) : null,
             resetTokenHash: user.resetTokenHash ? String(user.resetTokenHash) : null,
             resetTokenExpiresAt: user.resetTokenExpiresAt ? String(user.resetTokenExpiresAt) : null,
+            twoFactorEnabled: user.twoFactorEnabled === true,
+            twoFactorSecret: user.twoFactorSecret ? String(user.twoFactorSecret) : null,
+            pendingTwoFactorSecret: user.pendingTwoFactorSecret ? String(user.pendingTwoFactorSecret) : null,
             recoveryKeys: Array.isArray(user.recoveryKeys)
               ? user.recoveryKeys
                   .map((item) => ({

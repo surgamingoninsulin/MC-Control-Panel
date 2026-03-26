@@ -10,6 +10,14 @@ import { ServerAdminService } from "./services/ServerAdminService.js";
 import { ServerSettingsService } from "./services/ServerSettingsService.js";
 import { VersionCatalogService } from "./services/VersionCatalogService.js";
 import { ModService } from "./services/ModService.js";
+import { BackupService } from "./services/BackupService.js";
+import { JobsService } from "./services/JobsService.js";
+import { MetricsService } from "./services/MetricsService.js";
+import { NodeService } from "./services/NodeService.js";
+import { NotificationService } from "./services/NotificationService.js";
+import { PlatformDataService } from "./services/PlatformDataService.js";
+import { TokenService } from "./services/TokenService.js";
+import { NodeExecutionService } from "./services/NodeExecutionService.js";
 import type { WebSocketHub } from "./services/WebSocketHub.js";
 
 export type AppContext = {
@@ -25,5 +33,13 @@ export type AppContext = {
   plugins: PluginService;
   mods: ModService;
   configValidation: ConfigValidationService;
+  platform: PlatformDataService;
+  nodes: NodeService;
+  notifications: NotificationService;
+  backups: BackupService;
+  jobs: JobsService;
+  metrics: MetricsService;
+  tokens: TokenService;
+  nodeExec: NodeExecutionService;
   ws: WebSocketHub;
 };

@@ -1,9 +1,17 @@
 import type {
+  AuditEvent,
+  BackupRecord,
   EulaState,
   FileEntry,
+  JobRun,
+  MetricsSample,
+  NodeRecord,
   ModEntry,
+  NotificationPreference,
+  NotificationRecord,
   PlayerRecord,
   PluginEntry,
+  ScheduledJob,
   ServerAddonSummary,
   ServerPropertiesState,
   StartServerResult,
@@ -58,10 +66,16 @@ export const api = {
       body: JSON.stringify({ username, password, email })
     }),
   authLogin: (email: string, password: string) =>
-    request<{ user: UserRecord }>("/api/auth/login", {
+    request<{ user?: UserRecord; requiresTwoFactor?: boolean; challengeId?: string }>("/api/auth/login", {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ email, password })
+    }),
+  authLoginTwoFactor: (challengeId: string, code: string) =>
+    request<{ user: UserRecord }>("/api/auth/login/2fa", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ challengeId, code })
     }),
   authLogout: () => request<{ ok: true }>("/api/auth/logout", { method: "POST" }),
   requestPasswordReset: (identity: string) =>
@@ -83,6 +97,20 @@ export const api = {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ password })
+    }),
+  authTwoFactorState: () => request<{ enabled: boolean }>("/api/auth/2fa/state"),
+  authTwoFactorSetup: () => request<{ secret: string; otpAuthUrl: string; qrCodeDataUrl: string }>("/api/auth/2fa/setup", { method: "POST" }),
+  authTwoFactorEnable: (code: string) =>
+    request<{ user: UserRecord }>("/api/auth/2fa/enable", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ code })
+    }),
+  authTwoFactorDisable: (code: string) =>
+    request<{ user: UserRecord }>("/api/auth/2fa/disable", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ code })
     }),
 
   listUsers: () => request<{ users: UserRecord[] }>("/api/users"),
@@ -328,5 +356,75 @@ export const api = {
   validateConfig: (inputPath: string) =>
     request<{ ok: boolean; format: string; errors: string[]; hints: string[] }>(
       `/api/config/validate?path=${encodeURIComponent(inputPath)}`
-    )
+    ),
+  listBackups: (serverId?: string) =>
+    request<{ backups: BackupRecord[] }>(`/api/backups${serverId ? `?serverId=${encodeURIComponent(serverId)}` : ""}`),
+  createBackup: (serverId: string) =>
+    request<{ backup: BackupRecord }>(`/api/backups/server/${encodeURIComponent(serverId)}`, { method: "POST" }),
+  restoreBackup: (backupId: string) =>
+    request<{ restored: BackupRecord; preRestore: BackupRecord }>(`/api/backups/${encodeURIComponent(backupId)}/restore`, { method: "POST" }),
+  deleteBackup: (backupId: string) =>
+    request<{ removed: BackupRecord }>(`/api/backups/${encodeURIComponent(backupId)}`, { method: "DELETE" }),
+  backupDownloadUrl: (backupId: string) => `/api/backups/${encodeURIComponent(backupId)}/download`,
+  listJobs: (serverId?: string) =>
+    request<{ jobs: ScheduledJob[]; runs: JobRun[] }>(`/api/jobs${serverId ? `?serverId=${encodeURIComponent(serverId)}` : ""}`),
+  createJob: (payload: { serverId: string; name: string; kind: ScheduledJob["kind"]; intervalMinutes: number; command?: string | null }) =>
+    request<{ job: ScheduledJob }>("/api/jobs", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    }),
+  updateJobConfig: (id: string, payload: Partial<Pick<ScheduledJob, "name" | "enabled" | "intervalMinutes" | "command">>) =>
+    request<{ job: ScheduledJob }>(`/api/jobs/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    }),
+  runJobNow: (id: string) => request<{ run: JobRun }>(`/api/jobs/${encodeURIComponent(id)}/run`, { method: "POST" }),
+  deleteJob: (id: string) => request<{ removed: ScheduledJob }>(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  listNotifications: () => request<{ notifications: NotificationRecord[] }>("/api/notifications"),
+  markNotificationRead: (id: string) => request<{ notification: NotificationRecord }>(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
+  getNotificationPreferences: () => request<{ preferences: NotificationPreference }>("/api/notifications/preferences/me"),
+  updateNotificationPreferences: (payload: Partial<Omit<NotificationPreference, "userId">>) =>
+    request<{ preferences: NotificationPreference }>("/api/notifications/preferences/me", {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    }),
+  listAuditEvents: (query?: { action?: string; serverId?: string; result?: string }) => {
+    const params = new URLSearchParams();
+    if (query?.action) params.set("action", query.action);
+    if (query?.serverId) params.set("serverId", query.serverId);
+    if (query?.result) params.set("result", query.result);
+    return request<{ events: AuditEvent[] }>(`/api/audit${params.size ? `?${params.toString()}` : ""}`);
+  },
+  getNodeMetrics: (nodeId: string) => request<{ samples: MetricsSample[] }>(`/api/metrics/nodes/${encodeURIComponent(nodeId)}`),
+  getServerMetrics: (serverId: string) => request<{ samples: MetricsSample[] }>(`/api/metrics/servers/${encodeURIComponent(serverId)}`),
+  runBulkServersAction: (payload: { action: "start" | "stop" | "restart" | "update" | "backup"; serverIds: string[] }) =>
+    request<{ group: unknown }>("/api/bulk/servers", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    }),
+  listNodes: () => request<{ nodes: NodeRecord[] }>("/api/nodes"),
+  createNode: (payload: { name: string; baseUrl: string; authToken?: string | null }) =>
+    request<{ node: NodeRecord }>("/api/nodes", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    }),
+  updateNode: (id: string, payload: { name?: string; baseUrl?: string; authToken?: string }) =>
+    request<{ node: NodeRecord }>(`/api/nodes/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    }),
+  deleteNode: (id: string) => request<{ ok: true }>(`/api/nodes/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  testNode: (id: string) => request<{ ok: boolean; capabilities: unknown }>(`/api/nodes/${encodeURIComponent(id)}/test`, { method: "POST" }),
+  updateServerLocation: (id: string, payload: { nodeId: string; rootPath: string }) =>
+    request<{ server: ServerProfile }>(`/api/servers/${encodeURIComponent(id)}/location`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    })
 };

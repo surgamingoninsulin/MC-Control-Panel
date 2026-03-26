@@ -190,6 +190,50 @@ textarea:focus {
   gap: 8px;
 }
 
+.table-row-highlight {
+  background: rgba(71, 184, 255, 0.08);
+}
+
+.metrics-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(23, 34, 46, 0.95), rgba(15, 24, 34, 0.95));
+}
+
+.metric-card strong {
+  color: var(--ink-1);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.metric-card span {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.two-factor-qr {
+  width: 220px;
+  max-width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 10px;
+  display: block;
+  margin: 0 auto 12px;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
@@ -1637,6 +1681,10 @@ textarea:focus {
   justify-content: space-between;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.console-metrics-grid {
+  margin-bottom: 14px;
 }
 
 .modern-console {

@@ -92,6 +92,8 @@ export type ServerProfile = {
   nameKey: string;
   type: ServerInstallType;
   version: string;
+  nodeId?: string;
+  runtimeMode?: "process" | "docker";
   rootPath: string;
   createdAt: string;
   updatedAt: string;
@@ -126,8 +128,121 @@ export type UserRecord = {
   role: UserRole;
   active: boolean;
   mustChangePassword: boolean;
+  twoFactorEnabled?: boolean;
   recoveryKeysRemaining?: number;
   tempPasswordExpiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type BackupRecord = {
+  id: string;
+  serverId: string;
+  nodeId: string;
+  filePath: string;
+  kind: "manual" | "scheduled" | "pre-restore";
+  status: "ready" | "failed" | "restoring";
+  size: number;
+  checksum: string | null;
+  createdAt: string;
+  createdBy: string;
+  restoreSourceBackupId: string | null;
+  error: string | null;
+};
+
+export type ScheduledJob = {
+  id: string;
+  serverId: string;
+  nodeId: string;
+  name: string;
+  kind: "backup" | "start" | "stop" | "restart" | "command";
+  enabled: boolean;
+  scheduleType: "interval";
+  intervalMinutes: number;
+  command: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+};
+
+export type JobRun = {
+  id: string;
+  jobId: string | null;
+  serverId: string;
+  nodeId: string;
+  kind: "backup" | "start" | "stop" | "restart" | "command";
+  status: "queued" | "running" | "succeeded" | "failed";
+  startedAt: string;
+  finishedAt: string | null;
+  message: string | null;
+};
+
+export type NotificationRecord = {
+  id: string;
+  userId: string | null;
+  severity: "info" | "warn" | "error" | "success";
+  category: "server" | "backup" | "job" | "security" | "node" | "system";
+  title: string;
+  body: string;
+  serverId: string | null;
+  nodeId: string | null;
+  dedupeKey: string | null;
+  readAt: string | null;
+  createdAt: string;
+};
+
+export type NotificationPreference = {
+  userId: string;
+  inApp: boolean;
+  email: boolean;
+  webhook: boolean;
+};
+
+export type AuditEvent = {
+  id: string;
+  at: string;
+  action: string;
+  actor: string;
+  serverId: string | null;
+  nodeId: string | null;
+  result: "ok" | "error";
+  details: Record<string, unknown>;
+};
+
+export type MetricsSample = {
+  id: string;
+  nodeId: string;
+  serverId: string | null;
+  createdAt: string;
+  cpuPercent: number;
+  memoryUsedMb: number;
+  memoryTotalMb: number;
+  diskUsedMb: number;
+  diskTotalMb: number;
+  uptimeMs: number;
+  running: boolean;
+  pid: number | null;
+  backupStorageMb: number;
+  recentJobFailures: number;
+};
+
+export type NodeRecord = {
+  id: string;
+  name: string;
+  kind: "local" | "agent";
+  host: string;
+  baseUrl: string;
+  authToken: string | null;
+  status: "online" | "offline";
+  capabilities: {
+    runtime: boolean;
+    files: boolean;
+    backups: boolean;
+    metrics: boolean;
+    docker: boolean;
+  };
+  lastHeartbeatAt: string | null;
   createdAt: string;
   updatedAt: string;
 };

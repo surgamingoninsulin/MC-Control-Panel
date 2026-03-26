@@ -47,8 +47,8 @@ const resolvedServerRoot = fs.existsSync(configuredServerRoot) ? configuredServe
 const resolvedPanelDataDir = resolveConfiguredPath(process.env.PANEL_DATA_DIR, DEFAULT_PANEL_DATA);
 
 export const appConfig = {
-  port: Number(process.env.PORT || 4200),
-  host: process.env.HOST || "127.0.0.1",
+  port: Number(process.env.APP_BIND_PORT || process.env.PORT || 4200),
+  host: process.env.APP_BIND_HOST || process.env.HOST || "127.0.0.1",
   serverRoot: resolvedServerRoot,
   serversRoot: resolvedServersRoot,
   panelDataDir: resolvedPanelDataDir,
@@ -72,7 +72,11 @@ export const appConfig = {
       .filter(Boolean) || [],
   logFile: process.env.AUDIT_LOG_FILE || "panel-audit.log",
   maxSupportedVersion: process.env.MAX_SUPPORTED_VERSION || "1.21.11",
-  panelBaseUrl: process.env.PANEL_BASE_URL || `http://${process.env.HOST || "127.0.0.1"}:${process.env.PORT || 4200}`,
+  panelBaseUrl: process.env.PANEL_BASE_URL || `http://${process.env.APP_BIND_HOST || process.env.HOST || "127.0.0.1"}:${process.env.APP_BIND_PORT || process.env.PORT || 4200}`,
+  publicUrl: process.env.APP_PUBLIC_URL || process.env.PANEL_BASE_URL || `http://${process.env.APP_BIND_HOST || process.env.HOST || "127.0.0.1"}:${process.env.APP_BIND_PORT || process.env.PORT || 4200}`,
+  trustProxy: toBoolean(process.env.APP_TRUST_PROXY, false),
+  cookieSecure: toBoolean(process.env.COOKIE_SECURE, false),
+  cookieSameSite: process.env.COOKIE_SAME_SITE || "Lax",
   smtpHost: process.env.SMTP_HOST || "",
   smtpPort: Number(process.env.SMTP_PORT || 587),
   smtpSecure: toBoolean(process.env.SMTP_SECURE, false),

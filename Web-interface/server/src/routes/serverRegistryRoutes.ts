@@ -89,6 +89,21 @@ export const createServerRegistryRoutes = (ctx: AppContext): Router => {
     }
   });
 
+  router.put("/:id/location", requireRole(["owner", "admin"]), (req, res) => {
+    try {
+      const id = String(req.params.id || "");
+      const nodeId = String(req.body?.nodeId || "").trim();
+      const rootPath = String(req.body?.rootPath || "").trim();
+      if (!nodeId) return res.status(400).json({ error: "nodeId is required." });
+      if (!rootPath) return res.status(400).json({ error: "rootPath is required." });
+      ctx.nodes.getById(nodeId);
+      const server = ctx.servers.update(id, { nodeId, rootPath });
+      return res.json({ server });
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
   router.post("/install", requireRole(["owner", "admin"]), upload.single("icon"), async (req, res) => {
     try {
       const input = parseInstallInput(req.body);
