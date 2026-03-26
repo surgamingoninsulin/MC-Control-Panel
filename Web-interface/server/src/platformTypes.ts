@@ -72,8 +72,9 @@ export type ScheduledJob = {
   name: string;
   kind: JobKind;
   enabled: boolean;
-  scheduleType: "interval";
+  scheduleType: "interval" | "daily_time";
   intervalMinutes: number;
+  timeOfDay: string | null;
   command: string | null;
   createdAt: string;
   updatedAt: string;

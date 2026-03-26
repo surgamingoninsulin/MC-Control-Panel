@@ -157,8 +157,9 @@ export type ScheduledJob = {
   name: string;
   kind: "backup" | "start" | "stop" | "restart" | "command";
   enabled: boolean;
-  scheduleType: "interval";
+  scheduleType: "interval" | "daily_time";
   intervalMinutes: number;
+  timeOfDay: string | null;
   command: string | null;
   createdAt: string;
   updatedAt: string;

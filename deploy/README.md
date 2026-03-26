@@ -2,6 +2,8 @@
 
 This folder contains self-hosting assets for Windows, macOS, and Linux.
 
+Windows-specific service and Caddy steps are documented in `deploy/windows/README.md`.
+
 Recommended public setup:
 
 - DuckDNS for dynamic DNS

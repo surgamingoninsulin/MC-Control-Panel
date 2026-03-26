@@ -30,6 +30,12 @@ type RuntimeState = {
 
 const MAX_BUFFER = 3000;
 const ANSI_ESCAPE_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+const quoteExecutable = (value: string): string => {
+  const raw = String(value || "").trim();
+  if (!raw) return raw;
+  if (raw.startsWith("\"") && raw.endsWith("\"")) return raw;
+  return /\s/.test(raw) ? `"${raw}"` : raw;
+};
 
 export class MultiServerRuntimeService {
   private readonly events = new EventEmitter();
@@ -236,9 +242,10 @@ export class MultiServerRuntimeService {
   private buildStartCommand(serverId: string, serverRoot: string, settings: ServerSettings): string {
     if (settings.startupScript.trim()) return settings.startupScript.trim();
     if (appConfig.startCommand.trim()) return appConfig.startCommand.trim();
+    const javaBinary = quoteExecutable(appConfig.javaBinary);
     const jar = this.resolveJarPath(serverRoot);
     if (!appConfig.ramAutoEnabled) {
-      return `${appConfig.javaBinary} -Dterminal.jline=false -Dterminal.ansi=true -Xms2G -Xmx4G -jar "${jar}"${appConfig.useNogui ? " nogui" : ""}`;
+      return `${javaBinary} -Dterminal.jline=false -Dterminal.ansi=true -Xms2G -Xmx4G -jar "${jar}"${appConfig.useNogui ? " nogui" : ""}`;
     }
     const pluginCount = this.countPluginJars(serverRoot);
     const whitelistedPlayers = this.countWhitelistedPlayers(serverRoot);
@@ -257,7 +264,7 @@ export class MultiServerRuntimeService {
       serverId,
       `Auto RAM: system=${totalSystemGb.toFixed(1)}G, plugins=${pluginCount}, whitelist=${whitelistedPlayers}, min=${minBoundGb.toFixed(2)}G, max=${maxBoundGb.toFixed(2)}G, Xms=${xmsMb}M, Xmx=${xmxMb}M`
     );
-    return `${appConfig.javaBinary} -Dterminal.jline=false -Dterminal.ansi=true -Xms${xmsMb}M -Xmx${xmxMb}M -jar "${jar}"${appConfig.useNogui ? " nogui" : ""}`;
+    return `${javaBinary} -Dterminal.jline=false -Dterminal.ansi=true -Xms${xmsMb}M -Xmx${xmxMb}M -jar "${jar}"${appConfig.useNogui ? " nogui" : ""}`;
   }
 
   private resolveJarPath(serverRoot: string): string {

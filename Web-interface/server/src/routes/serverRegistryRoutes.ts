@@ -160,6 +160,18 @@ export const createServerRegistryRoutes = (ctx: AppContext): Router => {
     }
   });
 
+  router.post("/:id/icon/from-library", requireRole(["owner", "admin"]), (req, res) => {
+    try {
+      const id = String(req.params.id || "");
+      const file = String(req.body?.file || "").trim();
+      if (!file) return res.status(400).json({ error: "Icon file is required." });
+      ctx.servers.setServerIconFromDatabase(id, file);
+      return res.json({ ok: true });
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
   router.get("/icon-library/list", requireRole(["owner", "admin", "viewer"]), (_req, res) => {
     try {
       const icons = ctx.servers.listIconDatabase().map((entry) => ({

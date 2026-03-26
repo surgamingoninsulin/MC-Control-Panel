@@ -583,6 +583,8 @@ export class AuthService {
           const email = String(user.email || "").trim();
           const emailKey = normalize(String(user.emailKey || email));
           const role = (user.role || "viewer") as UserRole;
+          const twoFactorSecret = user.twoFactorSecret ? String(user.twoFactorSecret) : null;
+          const pendingTwoFactorSecret = user.pendingTwoFactorSecret ? String(user.pendingTwoFactorSecret) : null;
           return {
             id: String(user.id || `usr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
             username,
@@ -599,9 +601,10 @@ export class AuthService {
             devPasswordExpiresAt: user.devPasswordExpiresAt ? String(user.devPasswordExpiresAt) : null,
             resetTokenHash: user.resetTokenHash ? String(user.resetTokenHash) : null,
             resetTokenExpiresAt: user.resetTokenExpiresAt ? String(user.resetTokenExpiresAt) : null,
-            twoFactorEnabled: user.twoFactorEnabled === true,
-            twoFactorSecret: user.twoFactorSecret ? String(user.twoFactorSecret) : null,
-            pendingTwoFactorSecret: user.pendingTwoFactorSecret ? String(user.pendingTwoFactorSecret) : null,
+            // Keep 2FA enabled whenever a secret exists to prevent accidental disable from stale flags.
+            twoFactorEnabled: user.twoFactorEnabled === true || !!twoFactorSecret,
+            twoFactorSecret,
+            pendingTwoFactorSecret,
             recoveryKeys: Array.isArray(user.recoveryKeys)
               ? user.recoveryKeys
                   .map((item) => ({

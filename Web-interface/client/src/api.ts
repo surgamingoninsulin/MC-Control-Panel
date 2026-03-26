@@ -180,6 +180,12 @@ export const api = {
     return res.json() as Promise<{ server: ServerProfile; saved: string[] }>;
   },
   listServerIcons: () => request<{ icons: ServerIconEntry[] }>("/api/servers/icon-library/list"),
+  setServerIconFromLibrary: (serverId: string, file: string) =>
+    request<{ ok: true }>(`/api/servers/${encodeURIComponent(serverId)}/icon/from-library`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ file })
+    }),
   uploadServerIcon: async (file: File) => {
     const form = new FormData();
     form.append("icon", file, file.name);
@@ -368,13 +374,21 @@ export const api = {
   backupDownloadUrl: (backupId: string) => `/api/backups/${encodeURIComponent(backupId)}/download`,
   listJobs: (serverId?: string) =>
     request<{ jobs: ScheduledJob[]; runs: JobRun[] }>(`/api/jobs${serverId ? `?serverId=${encodeURIComponent(serverId)}` : ""}`),
-  createJob: (payload: { serverId: string; name: string; kind: ScheduledJob["kind"]; intervalMinutes: number; command?: string | null }) =>
+  createJob: (payload: {
+    serverId: string;
+    name: string;
+    kind: ScheduledJob["kind"];
+    scheduleType?: ScheduledJob["scheduleType"];
+    intervalMinutes: number;
+    timeOfDay?: string | null;
+    command?: string | null;
+  }) =>
     request<{ job: ScheduledJob }>("/api/jobs", {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify(payload)
     }),
-  updateJobConfig: (id: string, payload: Partial<Pick<ScheduledJob, "name" | "enabled" | "intervalMinutes" | "command">>) =>
+  updateJobConfig: (id: string, payload: Partial<Pick<ScheduledJob, "name" | "enabled" | "intervalMinutes" | "scheduleType" | "timeOfDay" | "command">>) =>
     request<{ job: ScheduledJob }>(`/api/jobs/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: jsonHeaders,

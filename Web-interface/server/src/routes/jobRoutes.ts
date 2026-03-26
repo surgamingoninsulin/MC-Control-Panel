@@ -40,7 +40,9 @@ export const createJobRoutes = (ctx: AppContext): Router => {
         nodeId: server.nodeId,
         name: String(req.body?.name || ""),
         kind: String(req.body?.kind || "") as "backup" | "start" | "stop" | "restart" | "command",
+        scheduleType: String(req.body?.scheduleType || "interval") as "interval" | "daily_time",
         intervalMinutes: Number(req.body?.intervalMinutes || 5),
+        timeOfDay: typeof req.body?.timeOfDay === "string" ? req.body.timeOfDay : null,
         command: typeof req.body?.command === "string" ? req.body.command : null
       });
       res.json({ job });

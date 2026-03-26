@@ -19,6 +19,13 @@ type ServerStatus = {
   uptimeMs: number;
 };
 
+const quoteExecutable = (value: string): string => {
+  const raw = String(value || "").trim();
+  if (!raw) return raw;
+  if (raw.startsWith("\"") && raw.endsWith("\"")) return raw;
+  return /\s/.test(raw) ? `"${raw}"` : raw;
+};
+
 export class ServerRuntimeService {
   private readonly legacyServerId = "__legacy__";
   private process: ChildProcessWithoutNullStreams | null = null;
@@ -149,9 +156,10 @@ export class ServerRuntimeService {
     const settings = this.settings.get(this.legacyServerId);
     if (settings.startupScript.trim()) return settings.startupScript.trim();
     if (appConfig.startCommand.trim()) return appConfig.startCommand.trim();
+    const javaBinary = quoteExecutable(appConfig.javaBinary);
     if (!appConfig.ramAutoEnabled) {
       const jar = this.resolveJarPath();
-      return `${appConfig.javaBinary} -Dterminal.jline=false -Dterminal.ansi=true -Xms2G -Xmx4G -jar "${jar}"${appConfig.useNogui ? " nogui" : ""}`;
+      return `${javaBinary} -Dterminal.jline=false -Dterminal.ansi=true -Xms2G -Xmx4G -jar "${jar}"${appConfig.useNogui ? " nogui" : ""}`;
     }
 
     const pluginCount = this.countPluginJars();
@@ -176,7 +184,7 @@ export class ServerRuntimeService {
       `Auto RAM: system=${totalSystemGb.toFixed(1)}G, plugins=${pluginCount}, whitelist=${whitelistedPlayers}, min=${minBoundGb.toFixed(2)}G, max=${maxBoundGb.toFixed(2)}G, Xms=${xmsMb}M, Xmx=${xmxMb}M`
     );
 
-    return `${appConfig.javaBinary} -Dterminal.jline=false -Dterminal.ansi=true -Xms${xmsMb}M -Xmx${xmxMb}M -jar "${jar}"${appConfig.useNogui ? " nogui" : ""}`;
+    return `${javaBinary} -Dterminal.jline=false -Dterminal.ansi=true -Xms${xmsMb}M -Xmx${xmxMb}M -jar "${jar}"${appConfig.useNogui ? " nogui" : ""}`;
   }
 
   private resolveJarPath(): string {

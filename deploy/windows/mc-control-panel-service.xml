@@ -3,7 +3,10 @@
   <name>MC Control Panel</name>
   <description>MC Control Panel backend service</description>
   <workingdirectory>%BASE%\..\..\Web-interface</workingdirectory>
-  <executable>npm</executable>
-  <arguments>--workspace server run start</arguments>
+  <executable>cmd</executable>
+  <arguments>/c "I:\Apps\nodejs\npm.cmd --workspace server run start"</arguments>
+  <serviceaccount>
+    <username>NT AUTHORITY\LocalService</username>
+  </serviceaccount>
   <onfailure action="restart" delay="10 sec" />
 </service>

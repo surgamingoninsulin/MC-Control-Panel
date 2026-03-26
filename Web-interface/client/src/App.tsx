@@ -34,7 +34,6 @@ type AddServerMode = "install" | "import";
 type UiUserRole = "admin" | "viewer";
 
 type ConfigEditorState = { path: string; content: string; originalContent: string; mtime: string };
-const STORAGE_KEY_SETUP = "panel.setup.complete";
 const STORAGE_KEY_LOGIN_EMAIL = "panel.login.email";
 const STORAGE_KEY_LOGIN_PASSWORD = "panel.login.password";
 const STORAGE_KEY_REMEMBER_EMAIL = "panel.login.remember.email";
@@ -270,7 +269,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<UserRecord | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [needsBootstrap, setNeedsBootstrap] = useState(false);
-  const [showSetupModal, setShowSetupModal] = useState(() => localStorage.getItem(STORAGE_KEY_SETUP) !== "1");
+  const [showSetupModal, setShowSetupModal] = useState(false);
   const [setupStep, setSetupStep] = useState(0);
   const [setupError, setSetupError] = useState("");
   const [setupUsername, setSetupUsername] = useState("");
@@ -349,7 +348,9 @@ export default function App() {
   const [iconDatabaseEntries, setIconDatabaseEntries] = useState<ServerIconEntry[]>([]);
   const [installIconFile, setInstallIconFile] = useState("");
   const [importIconFile, setImportIconFile] = useState("");
-  const [iconPickerTarget, setIconPickerTarget] = useState<"install" | "import">("install");
+  const [iconPickerTarget, setIconPickerTarget] = useState<"install" | "import" | "server">("install");
+  const [iconPickerServerId, setIconPickerServerId] = useState("");
+  const [serverIconVersion, setServerIconVersion] = useState<Record<string, number>>({});
   const [showInstallIconModal, setShowInstallIconModal] = useState(false);
   const [installIconModalSelectedFile, setInstallIconModalSelectedFile] = useState("");
   const [installIconModalUpload, setInstallIconModalUpload] = useState<File | null>(null);
@@ -411,7 +412,9 @@ export default function App() {
   const [jobsLoading, setJobsLoading] = useState(false);
   const [newJobName, setNewJobName] = useState("");
   const [newJobKind, setNewJobKind] = useState<ScheduledJob["kind"]>("backup");
+  const [newJobScheduleType, setNewJobScheduleType] = useState<ScheduledJob["scheduleType"]>("interval");
   const [newJobInterval, setNewJobInterval] = useState(60);
+  const [newJobTimeOfDay, setNewJobTimeOfDay] = useState("00:00");
   const [newJobCommand, setNewJobCommand] = useState("");
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [notificationPrefs, setNotificationPrefs] = useState<NotificationPreference | null>(null);
@@ -684,12 +687,14 @@ export default function App() {
     loadMe().then(async (ok) => {
       if (ok) {
         setNeedsBootstrap(false);
+        setShowSetupModal(false);
         await Promise.all([loadTypes(), loadServers(), loadNodes()]);
         return;
       }
       const state = await api.authState();
       setNeedsBootstrap(state.needsBootstrap);
-      if (state.needsBootstrap) { setShowSetupModal(true); await loadTypes(); }
+      setShowSetupModal(state.needsBootstrap);
+      if (state.needsBootstrap) await loadTypes();
     }).catch(() => void 0);
   }, []);
 
@@ -697,7 +702,12 @@ export default function App() {
     const handlePopState = () => {
       const path = window.location.pathname.toLowerCase();
       if (path === "/setup") {
-        setShowSetupModal(true);
+        if (needsBootstrap) {
+          setShowSetupModal(true);
+        } else {
+          setShowSetupModal(false);
+          if (!isAuthenticated) window.history.replaceState({}, "", "/login");
+        }
         return;
       }
       if (!isAuthenticated) return;
@@ -706,7 +716,7 @@ export default function App() {
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [isAuthenticated]);
+  }, [isAuthenticated, needsBootstrap]);
 
   useEffect(() => { activeViewRef.current = activeView; }, [activeView]);
   useEffect(() => { filesPathRef.current = filesPath; }, [filesPath]);
@@ -1050,7 +1060,6 @@ export default function App() {
       return;
     }
     if (setupStep === 5) {
-      localStorage.setItem(STORAGE_KEY_SETUP, "1");
       setShowSetupModal(false);
       setNeedsBootstrap(false);
       setSetupRecoveryKeys([]);
@@ -1443,11 +1452,12 @@ export default function App() {
     await loadServerAddonSummary(server);
   };
 
-  const openIconModal = async (target: "install" | "import") => {
+  const openIconModal = async (target: "install" | "import" | "server", serverId = "") => {
     setIconPickerTarget(target);
+    setIconPickerServerId(target === "server" ? serverId : "");
     const icons = await loadServerIcons();
     setInstallIconModalUpload(null);
-    const selectedIcon = target === "install" ? installIconFile : importIconFile;
+    const selectedIcon = target === "install" ? installIconFile : target === "import" ? importIconFile : "";
     setInstallIconModalSelectedFile(selectedIcon || icons.find((entry) => entry.isDefault)?.file || "");
     if (installIconRef.current) installIconRef.current.value = "";
     setShowInstallIconModal(true);
@@ -1458,14 +1468,22 @@ export default function App() {
       const out = await api.uploadServerIcon(installIconModalUpload);
       await loadServerIcons();
       if (iconPickerTarget === "install") setInstallIconFile(out.icon.file);
-      else setImportIconFile(out.icon.file);
+      else if (iconPickerTarget === "import") setImportIconFile(out.icon.file);
+      else if (iconPickerServerId) {
+        await api.setServerIconFromLibrary(iconPickerServerId, out.icon.file);
+        setServerIconVersion((prev) => ({ ...prev, [iconPickerServerId]: Date.now() }));
+      }
       setShowInstallIconModal(false);
       setInstallIconModalUpload(null);
       setInstallIconModalSelectedFile(out.icon.file);
       return;
     }
     if (iconPickerTarget === "install") setInstallIconFile(installIconModalSelectedFile);
-    else setImportIconFile(installIconModalSelectedFile);
+    else if (iconPickerTarget === "import") setImportIconFile(installIconModalSelectedFile);
+    else if (iconPickerServerId) {
+      await api.setServerIconFromLibrary(iconPickerServerId, installIconModalSelectedFile);
+      setServerIconVersion((prev) => ({ ...prev, [iconPickerServerId]: Date.now() }));
+    }
     setShowInstallIconModal(false);
   };
 
@@ -1527,16 +1545,24 @@ export default function App() {
 
   const createScheduledJobNow = async () => {
     if (!selectedServerId) return;
+    const scheduleLabel =
+      newJobScheduleType === "daily_time"
+        ? `daily at ${newJobTimeOfDay || "00:00"}`
+        : `every ${newJobInterval} minutes`;
     await api.createJob({
       serverId: selectedServerId,
-      name: newJobName || `${newJobKind} every ${newJobInterval} minutes`,
+      name: newJobName || `${newJobKind} ${scheduleLabel}`,
       kind: newJobKind,
+      scheduleType: newJobScheduleType,
       intervalMinutes: newJobInterval,
+      timeOfDay: newJobScheduleType === "daily_time" ? (newJobTimeOfDay || "00:00") : null,
       command: newJobKind === "command" ? newJobCommand : null
     });
     setNewJobName("");
     setNewJobCommand("");
+    setNewJobScheduleType("interval");
     setNewJobInterval(60);
+    setNewJobTimeOfDay("00:00");
     setNewJobKind("backup");
     await loadJobs();
   };
@@ -1717,7 +1743,17 @@ export default function App() {
                   className={selectedServerId === server.id ? "server-pill active server-item" : "server-pill server-item"}
                   onClick={() => setSelectedServerId(server.id)}
                 >
-                  <img className="server-list-icon" src={`/api/servers/${encodeURIComponent(server.id)}/icon`} alt={`${server.name} icon`} />
+                  <img
+                    className="server-list-icon"
+                    src={`/api/servers/${encodeURIComponent(server.id)}/icon?v=${serverIconVersion[server.id] || 0}`}
+                    alt={`${server.name} icon`}
+                    title={canOperateServer ? "Click to change server icon" : undefined}
+                    onClick={(e) => {
+                      if (!canOperateServer) return;
+                      e.stopPropagation();
+                      openIconModal("server", server.id).catch((err) => setMessage(err.message));
+                    }}
+                  />
                   <div className="server-pill-text">
                     <strong>{server.name}</strong>
                     <small>{server.type} {server.version}</small>
@@ -2064,15 +2100,20 @@ export default function App() {
                       <div className="settings-grid">
                         <label className="settings-field"><span>Name</span><input value={newJobName} onChange={(e) => setNewJobName(e.target.value)} placeholder="Nightly backup" /></label>
                         <label className="settings-field"><span>Kind</span><select value={newJobKind} onChange={(e) => setNewJobKind(e.target.value as ScheduledJob["kind"])}><option value="backup">backup</option><option value="start">start</option><option value="stop">stop</option><option value="restart">restart</option><option value="command">command</option></select></label>
-                        <label className="settings-field"><span>Interval (minutes)</span><input type="number" min={1} value={newJobInterval} onChange={(e) => setNewJobInterval(Math.max(1, Number(e.target.value || 1)))} /></label>
+                        <label className="settings-field"><span>Schedule</span><select value={newJobScheduleType} onChange={(e) => setNewJobScheduleType(e.target.value as ScheduledJob["scheduleType"])}><option value="interval">Every N minutes</option><option value="daily_time">Daily at time</option></select></label>
+                        {newJobScheduleType === "interval" ? (
+                          <label className="settings-field"><span>Interval (minutes)</span><input type="number" min={1} value={newJobInterval} onChange={(e) => setNewJobInterval(Math.max(1, Number(e.target.value || 1)))} /></label>
+                        ) : (
+                          <label className="settings-field"><span>Daily time</span><input type="time" step={60} value={newJobTimeOfDay} onChange={(e) => setNewJobTimeOfDay(e.target.value || "00:00")} /></label>
+                        )}
                         {newJobKind === "command" && <label className="settings-field settings-field-wide"><span>Command</span><input value={newJobCommand} onChange={(e) => setNewJobCommand(e.target.value)} placeholder="say Scheduled task started" /></label>}
                       </div>
                       <div className="row"><button className="btn-start" disabled={!canOperateServer || !selectedServerId} onClick={() => createScheduledJobNow().catch((e) => setMessage(e.message))}>Save Job</button></div>
                       <div className="users-list users-table-wrap">
                         {jobsLoading ? <div className="empty-list">Loading jobs...</div> : !jobs.length ? <div className="empty-list">No scheduled jobs yet.</div> : (
                           <table className="users-table">
-                            <thead><tr><th>Name</th><th>Kind</th><th>Every</th><th>Next run</th><th>Actions</th></tr></thead>
-                            <tbody>{jobs.map((job) => <tr key={job.id}><td>{job.name}</td><td>{job.kind}</td><td>{job.intervalMinutes} min</td><td>{job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : "-"}</td><td><div className="row wrap"><button onClick={() => toggleScheduledJob(job).catch((e) => setMessage(e.message))}>{job.enabled ? "Disable" : "Enable"}</button><button onClick={() => runScheduledJobNow(job).catch((e) => setMessage(e.message))}>Run Now</button><button className="btn-danger" onClick={() => deleteScheduledJobNow(job).catch((e) => setMessage(e.message))}>Delete</button></div></td></tr>)}</tbody>
+                            <thead><tr><th>Name</th><th>Kind</th><th>Schedule</th><th>Next run</th><th>Actions</th></tr></thead>
+                            <tbody>{jobs.map((job) => <tr key={job.id}><td>{job.name}</td><td>{job.kind}</td><td>{job.scheduleType === "daily_time" ? `Daily at ${job.timeOfDay || "00:00"}` : `Every ${job.intervalMinutes} min`}</td><td>{job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : "-"}</td><td><div className="row wrap"><button onClick={() => toggleScheduledJob(job).catch((e) => setMessage(e.message))}>{job.enabled ? "Disable" : "Enable"}</button><button onClick={() => runScheduledJobNow(job).catch((e) => setMessage(e.message))}>Run Now</button><button className="btn-danger" onClick={() => deleteScheduledJobNow(job).catch((e) => setMessage(e.message))}>Delete</button></div></td></tr>)}</tbody>
                           </table>
                         )}
                       </div>
@@ -2710,7 +2751,7 @@ export default function App() {
           <div className="modal-backdrop" onClick={() => setShowInstallIconModal(false)}>
             <div className="modal-card setup-modal icon-picker-modal" onClick={(e) => e.stopPropagation()}>
               <ModalCloseButton onClick={() => setShowInstallIconModal(false)} />
-              <h3>Select Server Icon</h3>
+              <h3>{iconPickerTarget === "server" ? "Select Icon for Server" : "Select Server Icon"}</h3>
               <div className="icon-picker-grid">
                 {iconDatabaseEntries.map((entry) => (
                   <div
