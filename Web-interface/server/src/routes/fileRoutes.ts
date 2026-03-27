@@ -1,5 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
+import { spawn } from "node:child_process";
 import type { AppContext } from "../context.js";
 import { appConfig } from "../config.js";
 import { requireRole } from "../middleware/auth.js";
@@ -82,6 +83,29 @@ export const createFileRoutes = (ctx: AppContext): Router => {
         details: { targetPath, count: saved.length }
       });
       return res.json({ saved });
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  router.post("/open-root", requireRole(["owner", "admin", "viewer"]), async (req, res) => {
+    try {
+      const serverId = readServerId(req);
+      const server = ctx.servers.requireById(serverId);
+      const target = server.rootPath;
+
+      if (process.platform === "win32") {
+        const child = spawn("explorer.exe", [target], { detached: true, stdio: "ignore" });
+        child.unref();
+      } else if (process.platform === "darwin") {
+        const child = spawn("open", [target], { detached: true, stdio: "ignore" });
+        child.unref();
+      } else {
+        const child = spawn("xdg-open", [target], { detached: true, stdio: "ignore" });
+        child.unref();
+      }
+
+      return res.json({ ok: true, rootPath: target });
     } catch (error) {
       return res.status(400).json({ error: (error as Error).message });
     }

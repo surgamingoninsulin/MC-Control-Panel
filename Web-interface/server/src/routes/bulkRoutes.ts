@@ -5,7 +5,7 @@ import { requireRole, type AuthedRequest } from "../middleware/auth.js";
 export const createBulkRoutes = (ctx: AppContext): Router => {
   const router = Router();
 
-  router.post("/servers", requireRole(["owner", "admin"]), (req, res) => {
+  router.post("/servers", requireRole(["owner", "admin"]), async (req, res) => {
     try {
       const action = String(req.body?.action || "") as "start" | "stop" | "restart" | "update" | "backup";
       const serverIds = Array.isArray(req.body?.serverIds)
@@ -29,9 +29,9 @@ export const createBulkRoutes = (ctx: AppContext): Router => {
       for (const serverId of serverIds) {
         try {
           const server = ctx.servers.requireById(serverId);
-          if (action === "start") ctx.runtime.start(server.id, server.rootPath);
+          if (action === "start") await ctx.runtime.start(server.id, server.rootPath);
           if (action === "stop") ctx.runtime.stop(server.id);
-          if (action === "restart") ctx.runtime.restart(server.id, server.rootPath);
+          if (action === "restart") await ctx.runtime.restart(server.id, server.rootPath);
           if (action === "backup") ctx.backups.create(server, actor, "manual");
           if (action === "update") void ctx.installer.updateServerJar(server);
           ctx.platform.update((state) => {

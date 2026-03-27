@@ -71,7 +71,6 @@ export const appConfig = {
       .map((v) => v.trim().toLowerCase())
       .filter(Boolean) || [],
   logFile: process.env.AUDIT_LOG_FILE || "panel-audit.log",
-  maxSupportedVersion: process.env.MAX_SUPPORTED_VERSION || "1.21.11",
   panelBaseUrl: process.env.PANEL_BASE_URL || `http://${process.env.APP_BIND_HOST || process.env.HOST || "127.0.0.1"}:${process.env.APP_BIND_PORT || process.env.PORT || 4200}`,
   publicUrl: process.env.APP_PUBLIC_URL || process.env.PANEL_BASE_URL || `http://${process.env.APP_BIND_HOST || process.env.HOST || "127.0.0.1"}:${process.env.APP_BIND_PORT || process.env.PORT || 4200}`,
   trustProxy: toBoolean(process.env.APP_TRUST_PROXY, false),

@@ -198,8 +198,8 @@ export const api = {
   getServerTypes: () => request<{ types: ServerTypeOption[] }>("/api/server-types"),
   getServerAddonSummary: (id: string) =>
     request<{ summary: ServerAddonSummary }>(`/api/servers/${encodeURIComponent(id)}/addons-summary`),
-  getServerVersions: (type: ServerInstallType) =>
-    request<{ versions: string[] }>(`/api/server-versions?type=${encodeURIComponent(type)}`),
+  getServerVersions: (type: ServerInstallType, forceRefresh = false) =>
+    request<{ versions: string[] }>(`/api/server-versions?type=${encodeURIComponent(type)}${forceRefresh ? "&force=1" : ""}`),
 
   serverStatus: () => request<ServerStatus>("/api/server/status"),
   startServer: () => request<StartServerResult>("/api/server/start", { method: "POST" }),
@@ -319,6 +319,10 @@ export const api = {
     if (!res.ok) throw new Error((await res.json()).error || "Upload failed");
     return res.json() as Promise<{ saved: string[] }>;
   },
+  openServerRootFolder: () =>
+    request<{ ok: true; rootPath: string }>("/api/files/open-root", {
+      method: "POST"
+    }),
   listPlugins: () => request<{ plugins: PluginEntry[] }>("/api/plugins/list"),
   installPlugin: async (artifact: File, mode: "jar" | "zip", confirmOverwrite = false) => {
     const form = new FormData();

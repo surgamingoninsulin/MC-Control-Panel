@@ -49,7 +49,7 @@ app.post("/api/agent/runtime/start", async (req, res) => {
     if (req.body?.settings) settings.update(serverId, req.body.settings);
     const eula = await admin.getEula(rootPath);
     if (!eula.accepted) return res.status(400).json({ error: "Minecraft EULA must be accepted on the remote node before start." });
-    return res.json({ status: runtime.start(serverId, rootPath) });
+    return res.json({ status: await runtime.start(serverId, rootPath) });
   } catch (error) {
     return res.status(400).json({ error: (error as Error).message });
   }
@@ -65,13 +65,13 @@ app.post("/api/agent/runtime/stop", (req, res) => {
   }
 });
 
-app.post("/api/agent/runtime/restart", (req, res) => {
+app.post("/api/agent/runtime/restart", async (req, res) => {
   try {
     const serverId = String(req.body?.serverId || "");
     const rootPath = String(req.body?.rootPath || "");
     if (!serverId || !rootPath) return res.status(400).json({ error: "serverId and rootPath are required." });
     if (req.body?.settings) settings.update(serverId, req.body.settings);
-    return res.json({ status: runtime.restart(serverId, rootPath) });
+    return res.json({ status: await runtime.restart(serverId, rootPath) });
   } catch (error) {
     return res.status(400).json({ error: (error as Error).message });
   }

@@ -11,9 +11,9 @@ const runJob = async (
   try {
     const server = ctx.servers.requireById(job.serverId);
     if (job.kind === "backup") ctx.backups.create(server, actor, "scheduled");
-    if (job.kind === "start") ctx.runtime.start(server.id, server.rootPath);
+    if (job.kind === "start") await ctx.runtime.start(server.id, server.rootPath);
     if (job.kind === "stop") ctx.runtime.stop(server.id);
-    if (job.kind === "restart") ctx.runtime.restart(server.id, server.rootPath);
+    if (job.kind === "restart") await ctx.runtime.restart(server.id, server.rootPath);
     if (job.kind === "command") {
       if (!job.command?.trim()) throw new Error("Command is required.");
       ctx.runtime.sendCommand(server.id, job.command);

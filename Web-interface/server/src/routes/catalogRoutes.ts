@@ -13,7 +13,8 @@ export const createCatalogRoutes = (ctx: AppContext): Router => {
   router.get("/server-versions", async (req, res) => {
     try {
       const type = String(req.query.type || "purpur") as ServerType;
-      const versions = await ctx.versionCatalog.getVersions(type);
+      const forceRefresh = /^(1|true|yes)$/i.test(String(req.query.force || "").trim());
+      const versions = await ctx.versionCatalog.getVersions(type, { forceRefresh });
       res.json({ versions });
     } catch (error) {
       res.status(400).json({ error: (error as Error).message });

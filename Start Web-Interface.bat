@@ -13,14 +13,6 @@ set "SERVER_ROOT=%SERVERS_DIR%"
 set "SERVERS_ROOT=%SERVERS_DIR%"
 set "PANEL_DATA_DIR=%WEB_DIR%\server\data"
 
-net session >nul 2>&1
-if %errorlevel%==0 (
-  echo [ERROR] Do not run this panel as Administrator.
-  echo Please close this window and run start.bat from a normal user terminal.
-  pause
-  exit /b 1
-)
-
 if not exist "%WEB_DIR%\package.json" (
   echo [ERROR] Web-interface\package.json not found.
   echo Make sure this file is placed in the project root next to Web-interface\ and Server\.

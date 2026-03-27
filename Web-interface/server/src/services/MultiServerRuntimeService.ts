@@ -6,6 +6,8 @@ import os from "node:os";
 import type { ConsoleLine } from "../types.js";
 import { appConfig } from "../config.js";
 import type { ServerSettings, ServerSettingsService } from "./ServerSettingsService.js";
+import { compareMcVersion } from "../utils/mcVersion.js";
+import { JavaRuntimeService } from "./JavaRuntimeService.js";
 
 export type ServerRuntimeStatus = {
   running: boolean;
@@ -40,6 +42,7 @@ const quoteExecutable = (value: string): string => {
 export class MultiServerRuntimeService {
   private readonly events = new EventEmitter();
   private readonly states = new Map<string, RuntimeState>();
+  private readonly javaRuntime = new JavaRuntimeService();
 
   constructor(private readonly settings: ServerSettingsService) {}
 
@@ -75,20 +78,19 @@ export class MultiServerRuntimeService {
     state.cursor = 0;
   }
 
-  start(serverId: string, serverRoot: string): ServerRuntimeStatus {
+  async start(serverId: string, serverRoot: string): Promise<ServerRuntimeStatus> {
     const state = this.getState(serverId);
     if (state.actionInProgress) {
       throw new Error("A server action is already in progress. Please wait a moment.");
     }
     if (state.process) return this.getStatus(serverId);
-    if (this.isElevatedRuntime()) throw new Error("Refused to start: do not run panel as Administrator/root.");
     state.actionInProgress = true;
     state.phase = "starting";
     try {
       this.acquireInstanceLock(serverId, serverRoot);
       const runtimeSettings = this.settings.get(serverId);
       this.applyServerProperties(serverId, serverRoot, runtimeSettings.serverIp, runtimeSettings.serverPort);
-      const startCommand = this.buildStartCommand(serverId, serverRoot, runtimeSettings);
+      const startCommand = await this.buildStartCommand(serverId, serverRoot, runtimeSettings);
       state.stopRequested = false;
       state.process = spawn(startCommand, { cwd: serverRoot, shell: true });
       state.startedAt = new Date();
@@ -122,11 +124,9 @@ export class MultiServerRuntimeService {
           this.pushSystemLine(serverId, shouldRequestedRestart ? "Restart requested. Starting server..." : "Auto-restart is enabled. Restarting server in 2 seconds...");
           setTimeout(() => {
             if (!state.process) {
-              try {
-                this.start(serverId, serverRoot);
-              } catch (error) {
+              void this.start(serverId, serverRoot).catch((error) => {
                 this.pushSystemLine(serverId, `Restart failed: ${(error as Error).message}`);
-              }
+              });
             }
           }, delayMs);
         }
@@ -159,7 +159,7 @@ export class MultiServerRuntimeService {
     return this.getStatus(serverId);
   }
 
-  restart(serverId: string, serverRoot: string): ServerRuntimeStatus {
+  async restart(serverId: string, serverRoot: string): Promise<ServerRuntimeStatus> {
     const state = this.getState(serverId);
     if (!state.process) return this.start(serverId, serverRoot);
     if (state.actionInProgress) {
@@ -239,11 +239,18 @@ export class MultiServerRuntimeService {
     return String(input || "").replace(ANSI_ESCAPE_REGEX, "").replace(/\u0007/g, "").trimEnd();
   }
 
-  private buildStartCommand(serverId: string, serverRoot: string, settings: ServerSettings): string {
+  private async buildStartCommand(serverId: string, serverRoot: string, settings: ServerSettings): Promise<string> {
     if (settings.startupScript.trim()) return settings.startupScript.trim();
     if (appConfig.startCommand.trim()) return appConfig.startCommand.trim();
-    const javaBinary = quoteExecutable(appConfig.javaBinary);
     const jar = this.resolveJarPath(serverRoot);
+    const javaResolution = await this.javaRuntime.ensureJavaForJar(jar);
+    const javaBinary = quoteExecutable(javaResolution.javaBinary);
+    if (javaResolution.requiredJava && javaResolution.downloaded) {
+      this.pushSystemLine(
+        serverId,
+        `Downloaded JDK ${javaResolution.requiredJava} for this server jar (${path.basename(jar)}).`
+      );
+    }
     if (!appConfig.ramAutoEnabled) {
       return `${javaBinary} -Dterminal.jline=false -Dterminal.ansi=true -Xms2G -Xmx4G -jar "${jar}"${appConfig.useNogui ? " nogui" : ""}`;
     }
@@ -277,6 +284,16 @@ export class MultiServerRuntimeService {
     const blocked = entries.filter((name) => /(installer|buildtools|launcher-installer)\.jar$/i.test(name));
     const runnable = entries.filter((name) => !blocked.includes(name));
     const pool = runnable.length ? runnable : entries;
+    const vanillaVersioned = pool
+      .map((name) => {
+        const match = name.match(/^vanilla-(\d+\.\d+(?:\.\d+)?)(?:-[\w.-]+)?\.jar$/i);
+        return match?.[1] ? { name, version: match[1] } : null;
+      })
+      .filter((entry): entry is { name: string; version: string } => !!entry)
+      .sort((a, b) => compareMcVersion(a.version, b.version));
+    if (vanillaVersioned.length) {
+      return path.resolve(serverRoot, vanillaVersioned[0].name);
+    }
     const preferred =
       pool.find((name) => /fabric-server-launch\.jar$/i.test(name)) ||
       pool.find((name) => /minecraft_server/i.test(name)) ||
@@ -314,16 +331,14 @@ export class MultiServerRuntimeService {
     if (process.platform === "win32") {
       try {
         const check = spawnSync(
-          "powershell",
-          [
-            "-NoProfile",
-            "-Command",
-            "(New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"
-          ],
+          "whoami",
+          ["/groups"],
           { encoding: "utf8" }
         );
-        const out = (check.stdout || "").trim().toLowerCase();
-        return out === "true";
+        if (check.error || check.status !== 0) return false;
+        const out = String(check.stdout || "").toLowerCase();
+        // Elevated shells run with High integrity token.
+        return /high mandatory level|s-1-16-12288/i.test(out);
       } catch {
         return false;
       }

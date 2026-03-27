@@ -11,6 +11,7 @@ import os from "node:os";
 import type { ConsoleLine } from "../types.js";
 import { appConfig } from "../config.js";
 import { ServerSettingsService } from "./ServerSettingsService.js";
+import { compareMcVersion } from "../utils/mcVersion.js";
 
 type ServerStatus = {
   running: boolean;
@@ -65,10 +66,6 @@ export class ServerRuntimeService {
 
   start(): ServerStatus {
     if (this.process) return this.getStatus();
-    if (this.isElevatedRuntime()) {
-      this.pushSystemLine("Refused to start server: panel is running with elevated/admin privileges.");
-      throw new Error("Refused to start: do not run the panel as Administrator/root.");
-    }
     const runtimeSettings = this.settings.get(this.legacyServerId);
     this.applyServerProperties(runtimeSettings.serverIp, runtimeSettings.serverPort);
     const startCommand = this.buildStartCommand();
@@ -195,6 +192,16 @@ export class ServerRuntimeService {
       .readdirSync(appConfig.serverRoot, { withFileTypes: true })
       .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".jar"))
       .map((e) => e.name);
+    const vanillaVersioned = entries
+      .map((name) => {
+        const match = name.match(/^vanilla-(\d+\.\d+(?:\.\d+)?)(?:-[\w.-]+)?\.jar$/i);
+        return match?.[1] ? { name, version: match[1] } : null;
+      })
+      .filter((entry): entry is { name: string; version: string } => !!entry)
+      .sort((a, b) => compareMcVersion(a.version, b.version));
+    if (vanillaVersioned.length) {
+      return path.resolve(appConfig.serverRoot, vanillaVersioned[0].name);
+    }
     const preferred =
       entries.find((n) => /purpur|paper|spigot|server/i.test(n)) || entries[0];
     if (!preferred) return configured;
@@ -230,16 +237,14 @@ export class ServerRuntimeService {
     if (process.platform === "win32") {
       try {
         const check = spawnSync(
-          "powershell",
-          [
-            "-NoProfile",
-            "-Command",
-            "(New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"
-          ],
+          "whoami",
+          ["/groups"],
           { encoding: "utf8" }
         );
-        const out = (check.stdout || "").trim().toLowerCase();
-        return out === "true";
+        if (check.error || check.status !== 0) return false;
+        const out = String(check.stdout || "").toLowerCase();
+        // Elevated shells run with High integrity token.
+        return /high mandatory level|s-1-16-12288/i.test(out);
       } catch {
         return false;
       }

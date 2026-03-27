@@ -2,13 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { appConfig } from "../config.js";
 import type { ServerType } from "./ServerRegistryService.js";
-import { compareMcVersion, isVersionGte, isVersionLte } from "../utils/mcVersion.js";
+import { compareMcVersion } from "../utils/mcVersion.js";
 
 type CacheShape = { schemaVersion: number; updatedAt: string; versionsByType: Record<string, string[]> };
 
-const MIN_VERSION = "1.7.10";
 const CACHE_TTL_MS = 1000 * 60 * 60;
-const CACHE_SCHEMA_VERSION = 2;
+const CACHE_SCHEMA_VERSION = 4;
 
 export class VersionCatalogService {
   private readonly filePath: string;
@@ -32,15 +31,15 @@ export class VersionCatalogService {
     ];
   }
 
-  async getVersions(type: ServerType): Promise<string[]> {
-    await this.refreshIfNeeded();
+  async getVersions(type: ServerType, options?: { forceRefresh?: boolean }): Promise<string[]> {
+    await this.refreshIfNeeded(!!options?.forceRefresh);
     const out = this.cache.versionsByType[type] || [];
     return [...out];
   }
 
-  private async refreshIfNeeded(): Promise<void> {
+  private async refreshIfNeeded(force = false): Promise<void> {
     const age = Date.now() - (this.cache.updatedAt ? new Date(this.cache.updatedAt).getTime() : 0);
-    if (this.cache.schemaVersion === CACHE_SCHEMA_VERSION && age < CACHE_TTL_MS && Object.keys(this.cache.versionsByType).length) return;
+    if (!force && this.cache.schemaVersion === CACHE_SCHEMA_VERSION && age < CACHE_TTL_MS && Object.keys(this.cache.versionsByType).length) return;
     const prev = this.cache.versionsByType || {};
     const mojang = await this.fetchMojangReleaseVersions();
     const paper = await this.fetchPaperMcVersions(mojang);
@@ -72,7 +71,6 @@ export class VersionCatalogService {
     const versions = (body.versions || [])
       .filter((entry) => entry.type === "release")
       .map((entry) => entry.id)
-      .filter((id) => isVersionGte(id, MIN_VERSION) && isVersionLte(id, appConfig.maxSupportedVersion))
       .sort(compareMcVersion);
     return [...new Set(versions)];
   }
@@ -85,7 +83,6 @@ export class VersionCatalogService {
       const keys = Object.keys(body.promos || {});
       const versions = keys
         .map((key) => key.replace(/-(latest|recommended)$/i, ""))
-        .filter((value) => isVersionGte(value, MIN_VERSION) && isVersionLte(value, appConfig.maxSupportedVersion))
         .sort(compareMcVersion);
       return [...new Set(versions)];
     } catch {
@@ -100,7 +97,6 @@ export class VersionCatalogService {
       const body = await response.json() as { versions?: string[] };
       const versions = (body.versions || [])
         .filter((value) => mojangVersions.includes(value))
-        .filter((value) => isVersionGte(value, MIN_VERSION) && isVersionLte(value, appConfig.maxSupportedVersion))
         .sort(compareMcVersion);
       return [...new Set(versions)];
     } catch {
@@ -115,7 +111,6 @@ export class VersionCatalogService {
       const body = await response.json() as { versions?: string[] };
       const versions = (body.versions || [])
         .filter((value) => mojangVersions.includes(value))
-        .filter((value) => isVersionGte(value, MIN_VERSION) && isVersionLte(value, appConfig.maxSupportedVersion))
         .sort(compareMcVersion);
       return [...new Set(versions)];
     } catch {
@@ -132,7 +127,6 @@ export class VersionCatalogService {
       const versions = matches
         .map((entry) => String(entry[1] || ""))
         .filter((value) => mojangVersions.includes(value))
-        .filter((value) => isVersionGte(value, MIN_VERSION) && isVersionLte(value, appConfig.maxSupportedVersion))
         .sort(compareMcVersion);
       return [...new Set(versions)];
     } catch {

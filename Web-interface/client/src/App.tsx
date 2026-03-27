@@ -363,6 +363,7 @@ export default function App() {
   const [filesEntries, setFilesEntries] = useState<FileEntry[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const filesBrowseRef = useRef<HTMLInputElement>(null);
   const [showConfigEditor, setShowConfigEditor] = useState(false);
   const [configEditor, setConfigEditor] = useState<ConfigEditorState | null>(null);
   const [configEditorError, setConfigEditorError] = useState("");
@@ -551,7 +552,7 @@ export default function App() {
       if (target === "install") setInstallVersionOptions([]);
       return;
     }
-    const versions = (await api.getServerVersions(type)).versions;
+    const versions = (await api.getServerVersions(type, true)).versions;
     if (target === "setup") setSetupVersionOptions(versions);
     if (target === "install") setInstallVersionOptions(versions);
   };
@@ -906,7 +907,14 @@ export default function App() {
   useEffect(() => { loadVersions(setupServerType, "setup").catch(() => void 0); }, [setupServerType]);
 
   useEffect(() => {
-    const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types || []).includes("Files");
+    const hasFiles = (dt: DataTransfer | null) => {
+      if (!dt) return false;
+      const types = Array.from(dt.types || []).map((value) => String(value).toLowerCase());
+      if (types.includes("files")) return true;
+      const items = Array.from(dt.items || []);
+      if (items.some((item) => item.kind === "file")) return true;
+      return Array.from(dt.files || []).length > 0;
+    };
     const handleDragEnter = (e: DragEvent) => {
       if (!hasFiles(e.dataTransfer)) return;
       dragCounterRef.current += 1;
@@ -921,28 +929,26 @@ export default function App() {
       e.preventDefault();
     };
     const handleDrop = async (e: DragEvent) => {
+      e.preventDefault();
       const dataTransfer = e.dataTransfer;
       dragCounterRef.current = 0;
       setDragOverlayVisible(false);
       if (!dataTransfer || !(activeViewRef.current === "files" || activeViewRef.current === "plugins")) return;
-      e.preventDefault();
       try {
         if (activeViewRef.current === "files") {
+          if (!selectedServerId) return setMessage("Select a server first.");
+          api.setActiveServerId(selectedServerId);
           const uploads = await collectDroppedUploads(dataTransfer);
-          if (!uploads.length) return;
-          await api.uploadFiles(filesPathRef.current, uploads);
+          if (!uploads.length) return setMessage("Drop detected but no files were readable. Try the Upload Files button for folder uploads.");
+          const out = await api.uploadFiles(filesPathRef.current, uploads);
           await loadFiles(filesPathRef.current);
+          setMessage(`Uploaded ${out.saved.length} file(s) to ${filesPathRef.current === "." ? "root" : filesPathRef.current}.`);
         } else {
           const files = Array.from(dataTransfer.files || []);
           if (!files.length) return;
           if (!addonsEnabled) return;
-          if (addonsMode === "plugins") {
-            for (const file of files) await api.installPlugin(file, file.name.toLowerCase().endsWith(".zip") ? "zip" : "jar");
-            await loadPlugins();
-          } else {
-            for (const file of files) await api.installMod(file, file.name.toLowerCase().endsWith(".zip") ? "zip" : "jar");
-            await loadMods();
-          }
+          if (addonsMode === "plugins") await installAddonBatch(files, "plugins");
+          else await installAddonBatch(files, "mods");
         }
       } catch (error) { setMessage((error as Error).message); }
     };
@@ -959,7 +965,7 @@ export default function App() {
       window.removeEventListener("drop", handleDrop);
       window.removeEventListener("keydown", handleEsc);
     };
-  }, [isAuthenticated, showSetupModal, addonsEnabled, addonsMode]);
+  }, [isAuthenticated, showSetupModal, addonsEnabled, addonsMode, selectedServerId]);
 
   const doLogin = async () => {
     setLoginError("");
@@ -1308,25 +1314,47 @@ export default function App() {
       await loadMods();
     }
   };
+  const installAddonBatch = async (files: File[], mode: "plugins" | "mods") => {
+    if (!files.length) return;
+    const failures: Array<{ name: string; error: string }> = [];
+    let installed = 0;
+    for (const file of files) {
+      try {
+        if (mode === "plugins") {
+          await api.installPlugin(file, file.name.toLowerCase().endsWith(".zip") ? "zip" : "jar");
+        } else {
+          await api.installMod(file, file.name.toLowerCase().endsWith(".zip") ? "zip" : "jar");
+        }
+        installed += 1;
+      } catch (error) {
+        failures.push({ name: file.name, error: (error as Error).message });
+      }
+    }
+    if (mode === "plugins") await loadPlugins();
+    else await loadMods();
+    if (!failures.length) {
+      setMessage(`Imported ${installed} ${mode === "plugins" ? "plugin" : "mod"} file(s).`);
+      return;
+    }
+    const preview = failures.slice(0, 3).map((entry) => `${entry.name}: ${entry.error}`).join(" | ");
+    const suffix = failures.length > 3 ? ` (+${failures.length - 3} more failures)` : "";
+    setMessage(`Imported ${installed}/${files.length} ${mode === "plugins" ? "plugin" : "mod"} file(s). Failed: ${preview}${suffix}`);
+  };
   const browsePluginInstall = async (files: File[]) => {
     if (!files.length) return;
     if (addonsMode !== "plugins") {
-      for (const file of files) await api.installMod(file, file.name.toLowerCase().endsWith(".zip") ? "zip" : "jar");
-      await loadMods();
+      await installAddonBatch(files, "mods");
       return;
     }
-    for (const file of files) await api.installPlugin(file, file.name.toLowerCase().endsWith(".zip") ? "zip" : "jar");
-    await loadPlugins();
+    await installAddonBatch(files, "plugins");
   };
   const browseModInstall = async (files: File[]) => {
     if (!files.length) return;
     if (addonsMode !== "mods") {
-      for (const file of files) await api.installPlugin(file, file.name.toLowerCase().endsWith(".zip") ? "zip" : "jar");
-      await loadPlugins();
+      await installAddonBatch(files, "plugins");
       return;
     }
-    for (const file of files) await api.installMod(file, file.name.toLowerCase().endsWith(".zip") ? "zip" : "jar");
-    await loadMods();
+    await installAddonBatch(files, "mods");
   };
   const createFsEntryNow = async () => {
     setCreateFsError("");
@@ -1345,6 +1373,31 @@ export default function App() {
     setCreateFsType("");
     setCreateFsName("");
     await loadFiles(filesPath);
+  };
+
+  const browseFilesUpload = async (files: File[]) => {
+    if (!files.length) return;
+    if (!selectedServerId) throw new Error("Select a server first.");
+    api.setActiveServerId(selectedServerId);
+    const out = await api.uploadFiles(filesPath, files);
+    await loadFiles(filesPath);
+    setMessage(`Uploaded ${out.saved.length} file(s) to ${filesPath === "." ? "root" : filesPath}.`);
+  };
+
+  const openServerRootFolderNow = async () => {
+    if (!activeServer) return;
+    try {
+      const out = await api.openServerRootFolder();
+      setMessage(`Opened server folder: ${out.rootPath}`);
+    } catch (error) {
+      const fallbackPath = activeServer.rootPath;
+      try {
+        await navigator.clipboard.writeText(fallbackPath);
+      } catch {
+        // ignore clipboard failures and still show path.
+      }
+      setMessage(`${(error as Error).message} Root path: ${fallbackPath}`);
+    }
   };
 
   const saveServerSettings = async () => {
@@ -1910,6 +1963,7 @@ export default function App() {
               <h2>Files</h2>
               <div className="view-layout">
                 <div className="row file-toolbar">
+                  <button onClick={() => openServerRootFolderNow().catch((e) => setMessage(e.message))}>Open Server Folder</button>
                   <button onClick={() => loadFiles(".").catch((e) => setMessage(e.message))}>Root</button>
                   <button onClick={() => {
                     const parts = (filesPath === "." ? "." : filesPath).split("/").filter(Boolean);
@@ -1918,7 +1972,15 @@ export default function App() {
                   }}>Up</button>
                   <span className="path-pill">{filesPath}</span>
                   <span className="toolbar-spacer" />
+                  <button onClick={() => filesBrowseRef.current?.click()}>Upload Files</button>
                   <button className="btn-create-entry" aria-label="Create file or folder" title="Create" onClick={() => { setShowCreateFsModal(true); setCreateFsType(""); setCreateFsName(""); setCreateFsError(""); }}><i className="fa-solid fa-plus" aria-hidden="true" /></button>
+                  <input
+                    ref={filesBrowseRef}
+                    type="file"
+                    multiple
+                    hidden
+                    onChange={(e) => browseFilesUpload([...(e.target.files || [])]).catch((err) => setMessage(err.message))}
+                  />
                 </div>
 
                 <div className="file-list modern-file-table">

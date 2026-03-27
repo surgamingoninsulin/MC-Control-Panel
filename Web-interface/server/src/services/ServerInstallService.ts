@@ -8,6 +8,10 @@ const MC_VERSION_RE = /(\d+\.\d+(?:\.\d+)?)/;
 
 type InstallResult = { jarPath: string; version?: string; build?: string | null; infoPath?: string };
 type UpdateResult = { jarPath: string; version: string; build: string | null; updated: boolean; infoPath: string };
+type MojangManifest = {
+  latest?: { release?: string };
+  versions: Array<{ id: string; url: string; type: string; releaseTime?: string }>;
+};
 
 const fetchJson = async <T>(url: string): Promise<T> => {
   const response = await fetch(url);
@@ -145,6 +149,28 @@ const parseVersionBuild = (value: string): { version: string; build: string | nu
   return { version: match[1], build: match[2] || null };
 };
 
+const pickVanillaVersionEntry = (
+  manifest: MojangManifest,
+  requestedVersion: string
+): { id: string; url: string } => {
+  const releases = (manifest.versions || []).filter((entry) => entry.type === "release");
+  if (!releases.length) throw new Error("No vanilla releases found in Mojang manifest.");
+  const wantsLatest = /^(latest|latest-release)$/i.test(String(requestedVersion || "").trim());
+  if (!wantsLatest) {
+    const exact = releases.find((entry) => entry.id === requestedVersion);
+    if (!exact) throw new Error("Vanilla version not found.");
+    return { id: exact.id, url: exact.url };
+  }
+  const latestReleaseId = String(manifest.latest?.release || "").trim();
+  if (latestReleaseId) {
+    const byLatestId = releases.find((entry) => entry.id === latestReleaseId);
+    if (byLatestId) return { id: byLatestId.id, url: byLatestId.url };
+  }
+  const sorted = [...releases].sort((a, b) => String(b.releaseTime || "").localeCompare(String(a.releaseTime || "")));
+  const fallback = sorted[0] || releases[0];
+  return { id: fallback.id, url: fallback.url };
+};
+
 export class ServerInstallService {
   async detectImportedServerJar(server: ServerRecord): Promise<{ jarFile: string | null; type: ServerType | null; version: string | null }> {
     const infoVersion = await this.readInfoVersion(server.rootPath);
@@ -220,30 +246,28 @@ export class ServerInstallService {
   async install(server: ServerRecord): Promise<InstallResult> {
     const inputVersion = String(server.version || "").trim();
     const mcVersion = extractMinecraftVersion(inputVersion);
-    if (!MC_VERSION_RE.test(mcVersion)) {
+    if (server.type !== "vanilla" && !MC_VERSION_RE.test(mcVersion)) {
       throw new Error(`Invalid Minecraft version: ${server.version}`);
     }
-    const jarPath = path.resolve(
-      server.rootPath,
-      server.type === "purpur" ? "purpur.jar" : `${server.type}-${mcVersion}.jar`
-    );
     await fs.mkdir(server.rootPath, { recursive: true });
     if (server.type === "vanilla") {
-      const manifest = await fetchJson<{
-        versions: Array<{ id: string; url: string; type: string }>;
-      }>("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
-      const versionEntry = manifest.versions.find(
-        (entry) => entry.id === mcVersion && entry.type === "release"
-      );
-      if (!versionEntry) throw new Error("Vanilla version not found.");
+      const manifest = await fetchJson<MojangManifest>("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
+      const versionEntry = pickVanillaVersionEntry(manifest, "latest");
       const versionMeta = await fetchJson<{ downloads?: { server?: { url: string } } }>(
         versionEntry.url
       );
       const url = versionMeta.downloads?.server?.url;
       if (!url) throw new Error("No server jar available for this vanilla version.");
+      const jarPath = path.resolve(server.rootPath, `vanilla-${versionEntry.id}.jar`);
       await downloadFile(url, jarPath);
-      return { jarPath };
+      await this.removeVanillaVersionedJars(server.rootPath, jarPath);
+      await this.writeInfoVersion(server.rootPath, versionEntry.id);
+      return { jarPath, version: versionEntry.id };
     }
+    const jarPath = path.resolve(
+      server.rootPath,
+      server.type === "purpur" ? "purpur.jar" : `${server.type}-${mcVersion}.jar`
+    );
     if (server.type === "paper") {
       const builds = await fetchJson<{ builds: number[] }>(
         `https://api.papermc.io/v2/projects/paper/versions/${mcVersion}`
@@ -329,8 +353,30 @@ export class ServerInstallService {
   }
 
   async updateServerJar(server: ServerRecord): Promise<UpdateResult> {
+    if (server.type === "vanilla") {
+      const manifest = await fetchJson<MojangManifest>("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
+      const latestEntry = pickVanillaVersionEntry(manifest, "latest");
+      const versionMeta = await fetchJson<{ downloads?: { server?: { url: string } } }>(latestEntry.url);
+      const url = versionMeta.downloads?.server?.url;
+      if (!url) throw new Error("No server jar available for the latest vanilla version.");
+      const jarPath = path.resolve(server.rootPath, `vanilla-${latestEntry.id}.jar`);
+      const tmpPath = `${jarPath}.download`;
+      await downloadFile(url, tmpPath);
+      await fs.rm(jarPath, { force: true });
+      await fs.rename(tmpPath, jarPath);
+      await this.removeVanillaVersionedJars(server.rootPath, jarPath);
+      const infoPath = await this.writeInfoVersion(server.rootPath, latestEntry.id);
+      const current = parseVersionBuild(server.version).version;
+      return {
+        jarPath,
+        version: latestEntry.id,
+        build: null,
+        updated: current !== latestEntry.id,
+        infoPath
+      };
+    }
     if (server.type !== "purpur") {
-      throw new Error("Update is currently supported for Purpur servers only.");
+      throw new Error("Update is currently supported for Vanilla and Purpur servers only.");
     }
     const infoVersion = await this.readInfoVersion(server.rootPath);
     const fromServer = parseVersionBuild(server.version);
@@ -433,6 +479,24 @@ export class ServerInstallService {
     const toDelete = entries
       .filter((entry) => entry.isFile() && /^purpur-\d+\.\d+(?:\.\d+)?-\d+\.jar$/i.test(entry.name))
       .map((entry) => path.resolve(serverRoot, entry.name));
+    await Promise.all(toDelete.map((filePath) => fs.rm(filePath, { force: true })));
+  }
+
+  private async removeVanillaVersionedJars(serverRoot: string, keepJarPath: string): Promise<void> {
+    const keep = path.resolve(keepJarPath);
+    const entries = await fs.readdir(serverRoot, { withFileTypes: true });
+    const toDelete = entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => path.resolve(serverRoot, entry.name))
+      .filter((filePath) => filePath !== keep)
+      .filter((filePath) => {
+        const name = path.basename(filePath);
+        return (
+          /^vanilla-\d+\.\d+(?:\.\d+)?(?:-[\w.-]+)?\.jar$/i.test(name) ||
+          /^server-\d+\.\d+(?:\.\d+)?(?:-[\w.-]+)?\.jar$/i.test(name) ||
+          /^minecraft_server(?:\.\d+)?\.\d+\.\d+(?:\.\d+)?\.jar$/i.test(name)
+        );
+      });
     await Promise.all(toDelete.map((filePath) => fs.rm(filePath, { force: true })));
   }
 }
